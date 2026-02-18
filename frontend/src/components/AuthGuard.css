@@ -1,0 +1,288 @@
+/* ============================================
+   AuthGuard — Identity Barrier Styles
+   ============================================ */
+
+/* === AuthGuard Wrapper === */
+
+.auth-guard__wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Botão disabled (não autenticado) */
+.auth-guard__button.btn--auth-required {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 12px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  cursor: not-allowed;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+  pointer-events: auto;
+}
+
+.auth-guard__button.btn--auth-required:hover {
+  opacity: 0.8;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.auth-guard__lock {
+  font-size: 11px;
+}
+
+/* Badge 🔒 no canto */
+.auth-guard__button.btn--auth-required::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  background: #f59e0b;
+  border-radius: 50%;
+  border: 2px solid var(--bg-primary, #0d1117);
+}
+
+/* Tooltip nativo (complementar ao title) */
+.auth-guard__tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 10px;
+  background: rgba(30, 30, 30, 0.95);
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 1000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  backdrop-filter: blur(8px);
+}
+
+.auth-guard__tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(30, 30, 30, 0.95);
+}
+
+.auth-guard__wrapper:hover .auth-guard__tooltip {
+  opacity: 1;
+}
+
+/* Botão "Conectar GitHub" */
+.auth-guard__link-github {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid rgba(130, 80, 223, 0.3);
+  border-radius: 6px;
+  background: rgba(130, 80, 223, 0.1);
+  color: #a78bfa;
+  font-size: 12px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.auth-guard__link-github:hover {
+  background: rgba(130, 80, 223, 0.2);
+  border-color: rgba(130, 80, 223, 0.5);
+}
+
+.auth-guard__icon {
+  font-size: 13px;
+}
+
+/* ============================================
+   LoginPrompt — Modal Contextual
+   ============================================ */
+
+.login-prompt__overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  animation: loginPromptFadeIn 0.2s ease-out;
+}
+
+.login-prompt__modal {
+  width: 380px;
+  background: #161b22;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  animation: loginPromptSlideUp 0.3s ease-out;
+}
+
+/* Header */
+.login-prompt__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.login-prompt__icon {
+  font-size: 20px;
+}
+
+.login-prompt__title {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e6edf3;
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+.login-prompt__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.login-prompt__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Body */
+.login-prompt__body {
+  padding: 20px;
+}
+
+.login-prompt__message {
+  margin: 0 0 20px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: 'Inter', -apple-system, sans-serif;
+}
+
+/* Action Buttons */
+.login-prompt__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.login-prompt__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: 'Inter', -apple-system, sans-serif;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.login-prompt__btn--github {
+  background: #238636;
+  border: 1px solid #2ea043;
+  color: #ffffff;
+}
+
+.login-prompt__btn--github:hover {
+  background: #2ea043;
+  box-shadow: 0 0 20px -4px rgba(46, 160, 67, 0.3);
+}
+
+.login-prompt__btn--google {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e6edf3;
+}
+
+.login-prompt__btn--google:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Divider */
+.login-prompt__divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.login-prompt__divider::before,
+.login-prompt__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Ghost / Continue without login */
+.login-prompt__btn--ghost {
+  width: 100%;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+}
+
+.login-prompt__btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.6);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Animations */
+@keyframes loginPromptFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes loginPromptSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

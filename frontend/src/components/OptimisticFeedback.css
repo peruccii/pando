@@ -1,0 +1,246 @@
+/* ============================================
+   OptimisticFeedback — Status visual styles
+   ============================================ */
+
+/* === Base === */
+
+.optimistic {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  animation: optimisticSlideIn 0.25s ease-out;
+  transition: all 0.3s ease;
+}
+
+.optimistic__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.optimistic__text {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.optimistic__text strong {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.optimistic__content {
+  padding-left: 20px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* === Pending === */
+
+.optimistic--pending {
+  background: rgba(245, 158, 11, 0.06);
+  border-left: 3px solid #f59e0b;
+}
+
+.optimistic--pending .optimistic__status svg {
+  color: #f59e0b;
+}
+
+.optimistic__spinner {
+  animation: optimisticSpin 0.8s linear infinite;
+}
+
+/* === Success === */
+
+.optimistic--success {
+  background: rgba(34, 197, 94, 0.06);
+  border-left: 3px solid #22c55e;
+  animation: optimisticSlideIn 0.25s ease-out, optimisticFadeOut 0.5s ease 2.5s forwards;
+}
+
+.optimistic--success .optimistic__status svg {
+  color: #22c55e;
+}
+
+.optimistic--success .optimistic__text {
+  color: #22c55e;
+}
+
+/* === Error === */
+
+.optimistic--error {
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid #ef4444;
+}
+
+.optimistic--error .optimistic__status svg {
+  color: #ef4444;
+}
+
+.optimistic__error-details {
+  padding-left: 20px;
+}
+
+.optimistic__error-msg {
+  display: block;
+  font-size: 11px;
+  color: rgba(239, 68, 68, 0.8);
+  margin-bottom: 6px;
+}
+
+/* === Actions === */
+
+.optimistic__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.optimistic__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.optimistic__btn--retry {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #f59e0b;
+}
+
+.optimistic__btn--retry:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+.optimistic__btn--rollback {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.optimistic__btn--rollback:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+/* === Dismiss === */
+
+.optimistic__dismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.optimistic__dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* === List === */
+
+.optimistic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* === GitHub-specific feedback (within comments/reviews) === */
+
+/* Comentário pendente */
+.comment--pending {
+  opacity: 0.7;
+  border-left: 3px solid #f59e0b;
+  position: relative;
+}
+
+.comment--pending::after {
+  content: 'Enviando...';
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  font-size: 10px;
+  color: #f59e0b;
+  font-style: italic;
+}
+
+/* Comentário com erro */
+.comment--error {
+  opacity: 0.85;
+  border-left: 3px solid #ef4444;
+}
+
+.comment--error::after {
+  content: '⚠ Falha ao enviar';
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  font-size: 10px;
+  color: #ef4444;
+}
+
+/* Comentário confirmado */
+.comment--success {
+  opacity: 1;
+  border-left: 3px solid #22c55e;
+  transition: border-color 0.5s ease, opacity 0.5s ease;
+}
+
+/* Review states */
+.review--pending {
+  opacity: 0.7;
+  border-left: 3px solid #f59e0b;
+}
+
+.review--error {
+  opacity: 0.85;
+  border-left: 3px solid #ef4444;
+}
+
+.review--success {
+  border-left: 3px solid #22c55e;
+  transition: border-color 0.5s ease;
+}
+
+/* === Animations === */
+
+@keyframes optimisticSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 200px;
+  }
+}
+
+@keyframes optimisticFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes optimisticSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

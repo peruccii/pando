@@ -1,0 +1,24 @@
+/* ============================================
+   ZEN MODE OVERLAY — Full Screen
+   ============================================ */
+
+.zen-mode-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: var(--z-zen);
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+.zen-mode-overlay__header {
+  flex-shrink: 0;
+}
+
+.zen-mode-overlay__content {
+  flex: 1;
+  overflow: hidden;
+}

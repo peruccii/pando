@@ -1,0 +1,129 @@
+/* Titlebar — already uses base styles from index.css (.titlebar) */
+/* Additional titlebar-specific styles */
+
+.titlebar-git-activity {
+  --git-activity-color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  height: 24px;
+  margin-right: 8px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  appearance: none;
+  outline: none;
+  text-align: left;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.titlebar-git-activity:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+}
+
+.titlebar-git-activity__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--git-activity-color);
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+.titlebar-git-activity__text {
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.titlebar-git-activity__badge {
+  margin-left: 2px;
+  min-width: 18px;
+  height: 15px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-secondary);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  line-height: 1;
+  text-align: center;
+  font-family: var(--font-sans);
+}
+
+.titlebar-git-activity--branch {
+  --git-activity-color: var(--accent);
+}
+
+.titlebar-git-activity--commit {
+  --git-activity-color: var(--success);
+}
+
+.titlebar-git-activity--merge {
+  --git-activity-color: var(--warning);
+}
+
+.titlebar-git-activity--fetch {
+  --git-activity-color: var(--info);
+}
+
+.titlebar-git-activity--index {
+  --git-activity-color: var(--warning);
+}
+
+.titlebar-git-activity--unknown {
+  --git-activity-color: var(--text-secondary);
+}
+
+.titlebar-git-activity--pr {
+  --git-activity-color: var(--accent);
+}
+
+.titlebar-git-activity:focus-visible {
+  border-color: var(--border-focus);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.2);
+}
+
+.titlebar-build-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 24px;
+  margin-right: 8px;
+  background-color: var(--bg-hover);
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--accent);
+  cursor: pointer;
+  border: 1px solid var(--accent-muted);
+  transition: all var(--transition-normal);
+}
+
+.titlebar-build-indicator:hover {
+  background-color: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.titlebar-build-indicator .ascii-loader {
+  font-weight: bold;
+  font-size: 1.2em;
+}
+
+.titlebar-build-indicator .build-timer {
+  opacity: 0.9;
+}

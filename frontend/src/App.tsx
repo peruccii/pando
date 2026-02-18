@@ -1,0 +1,109 @@
+import { useEffect, useCallback } from 'react'
+import { useWailsEvents } from './hooks/useWailsEvents'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useStackBuildEvents } from './hooks/useStackBuildEvents'
+import { useI18n } from './hooks/useI18n'
+import { useAppStore } from './stores/appStore'
+import { Titlebar } from './components/Titlebar'
+import { EmptyState } from './components/EmptyState'
+import { CommandPalette } from './components/CommandPalette'
+import { NewTerminalDialog } from './components/NewTerminalDialog'
+import { Settings } from './components/Settings'
+import { TabBar } from './components/TabBar'
+import { OnboardingWizard } from './components/OnboardingWizard'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import './components/ErrorBoundary.css'
+import { CommandCenter, useLayout } from './features/command-center'
+import { useLayoutStore } from './features/command-center/stores/layoutStore'
+import { BroadcastBar, useBroadcastStore } from './features/broadcast'
+import { GitActivityPanel, useGitActivity } from './features/git-activity'
+import { useWorkspaceStore } from './stores/workspaceStore'
+
+export function App() {
+    useWailsEvents()
+    useKeyboardShortcuts()
+    useStackBuildEvents()
+    useGitActivity()
+
+    const isReady = useAppStore((s) => s.isReady)
+    const version = useAppStore((s) => s.version)
+    const onboardingCompleted = useAppStore((s) => s.onboardingCompleted)
+    const { hasPanes } = useLayout()
+    const resetLayout = useLayoutStore((s) => s.reset)
+    const loadWorkspaces = useWorkspaceStore((s) => s.loadWorkspaces)
+    const { t } = useI18n()
+    const isBroadcastActive = useBroadcastStore((s) => s.isActive)
+
+    /** Quando o CommandCenter crashar, resetar o layout para estado limpo */
+    const handleLayoutError = useCallback(() => {
+        console.warn('[App] CommandCenter crashed, resetting layout')
+        resetLayout()
+    }, [resetLayout])
+
+    // Carregar workspaces e sincronizar o layout do workspace ativo
+    useEffect(() => {
+        if (isReady) {
+            loadWorkspaces().catch((err) => {
+                console.error('[App] Failed to load workspaces:', err)
+            })
+        }
+    }, [isReady, loadWorkspaces])
+
+    // Escutar evento de shutdown para salvar sessões de terminal
+    useEffect(() => {
+        if (window.runtime) {
+            const off = window.runtime.EventsOn('app:before-shutdown', async () => {
+                console.log('[App] Capturing terminal snapshots before shutdown...')
+                const snapshots = useLayoutStore.getState().captureTerminalSnapshots()
+                if (snapshots.length > 0) {
+                    try {
+                        await window.go?.main?.App?.SaveTerminalSnapshots(snapshots)
+                    } catch (err) {
+                        console.error('[App] Failed to save terminal snapshots:', err)
+                    }
+                }
+            })
+            return () => off()
+        }
+    }, [])
+
+    if (!isReady) {
+        return (
+            <div className="app-loading">
+                <div className="app-loading__spinner" />
+                <span className="app-loading__text">{t('app.loading')}</span>
+            </div>
+        )
+    }
+
+    return (
+        <div className={`app ${isBroadcastActive ? 'app--broadcast-active' : ''}`}>
+            <Titlebar />
+            <TabBar />
+            <main className="app__main">
+                {hasPanes ? (
+                    <ErrorBoundary onReset={handleLayoutError}>
+                        <CommandCenter />
+                    </ErrorBoundary>
+                ) : (
+                    <EmptyState version={version} />
+                )}
+            </main>
+
+            {isBroadcastActive && <BroadcastBar />}
+
+            {/* Command Palette (global overlay) */}
+            <CommandPalette />
+
+            <NewTerminalDialog />
+
+            <GitActivityPanel />
+
+            {/* Settings Modal (global overlay) */}
+            <Settings />
+
+            {/* Onboarding Wizard (first run) */}
+            <OnboardingWizard isOpen={!onboardingCompleted} />
+        </div>
+    )
+}

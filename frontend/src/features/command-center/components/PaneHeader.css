@@ -1,0 +1,156 @@
+/* ============================================
+   PANE HEADER — 28px top bar
+   ============================================ */
+
+.pane-header-drag-wrapper {
+  width: 100%;
+  height: 100%;
+}
+.pane-header {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  cursor: grab;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  width: 100%;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.pane-header:active {
+  cursor: grabbing;
+}
+
+.pane-header--active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  position: relative;
+}
+
+.pane-header--active::before {
+  content: '';
+  position: absolute;
+  top: -1px; /* Sobrepõe exatamente a borda superior do container */
+  left: -1px;
+  right: -1px;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 2px 4px rgba(var(--accent-rgb), 0.2);
+  z-index: 10;
+}
+
+.pane-header--broadcast {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-bottom-color: var(--accent);
+  animation: paneBroadcastFlash 500ms ease-out;
+}
+
+.pane-header--drop-target {
+  background: rgba(var(--accent-rgb), 0.22);
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.6);
+}
+
+.pane-header__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pane-header__drag-handle {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  cursor: grab;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.pane-header__drag-handle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.pane-header__drag-handle:active {
+  cursor: grabbing;
+}
+
+.pane-header__type-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.pane-header__broadcast-badge {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.pane-header__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-header__controls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.pane-header:hover .pane-header__controls,
+.pane-header--active .pane-header__controls {
+  opacity: 1;
+}
+
+.pane-header__btn {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  padding: 0;
+}
+
+.pane-header__btn:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.pane-header__btn--danger:hover {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+@keyframes paneBroadcastFlash {
+  0% {
+    box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.95);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+}

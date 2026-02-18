@@ -1,0 +1,176 @@
+/* ============================================
+   COMMAND CENTER — Mosaic Grid
+   ============================================ */
+
+.command-center {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Override react-mosaic styles para tema ORCH */
+.mosaic-theme-orch {
+  background: var(--bg-primary) !important;
+}
+
+.mosaic-theme-orch .mosaic-tile {
+  margin: 1px;
+}
+
+.mosaic-theme-orch .mosaic-split {
+  z-index: 10;
+}
+
+.mosaic-theme-orch .mosaic-split.-row {
+  margin-left: -3px;
+  width: var(--gutter-size);
+  cursor: col-resize;
+}
+
+.mosaic-theme-orch .mosaic-split.-column {
+  margin-top: -3px;
+  height: var(--gutter-size);
+  cursor: row-resize;
+}
+
+.mosaic-theme-orch .mosaic-split:hover .mosaic-split-line {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.3);
+}
+
+.mosaic-theme-orch .mosaic-split-line {
+  background: var(--border-primary);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* === Pane Window === */
+.pane-window {
+  transition: border-color var(--transition-normal),
+              box-shadow var(--transition-normal),
+              opacity var(--transition-normal);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-primary) !important;
+}
+
+.pane-window--active {
+  border-color: var(--border-primary) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(var(--accent-rgb), 0.2);
+  z-index: 5;
+}
+
+.pane-window--inactive {
+  opacity: 0.85;
+}
+
+.pane-window--inactive:hover {
+  opacity: 0.95;
+  border-color: var(--border-focus) !important;
+}
+
+.pane-window--drop-ready {
+  border-color: rgba(var(--accent-rgb), 0.7) !important;
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25);
+}
+
+/* Override MosaicWindow toolbar height */
+.mosaic-theme-orch .mosaic-window-toolbar {
+  height: var(--header-height) !important;
+  min-height: var(--header-height) !important;
+  padding: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+.mosaic-theme-orch .mosaic-window-body {
+  background: var(--bg-primary) !important;
+}
+
+.mosaic-theme-orch .mosaic-window-body-overlay {
+  display: none !important;
+}
+
+/* Drag preview */
+.mosaic-theme-orch .mosaic-preview {
+  border: 2px dashed var(--accent) !important;
+  background: var(--accent-muted) !important;
+  border-radius: var(--radius-md);
+}
+
+/* Quando está arrastando */
+.mosaic-theme-orch .mosaic-window.mosaic-window--dragging {
+  opacity: 0.5;
+  transform: scale(0.98);
+}
+
+/* === Pane Content === */
+.pane-content {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  position: relative;
+}
+
+.pane-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+  grid-template-areas:
+    ". top ."
+    "left center right"
+    ". bottom .";
+  pointer-events: none;
+  background: rgba(var(--accent-rgb), 0.05);
+}
+
+.pane-drop-zone {
+  pointer-events: auto;
+  margin: 6px;
+  border-radius: 10px;
+  border: 1px dashed rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.08);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.pane-drop-zone--top {
+  grid-area: top;
+}
+
+.pane-drop-zone--left {
+  grid-area: left;
+}
+
+.pane-drop-zone--center {
+  grid-area: center;
+}
+
+.pane-drop-zone--right {
+  grid-area: right;
+}
+
+.pane-drop-zone--bottom {
+  grid-area: bottom;
+}
+
+.pane-drop-zone--active {
+  border-color: rgba(var(--accent-rgb), 0.95);
+  background: rgba(var(--accent-rgb), 0.25);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.5), 0 0 12px rgba(var(--accent-rgb), 0.35);
+}
+
+.pane-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}

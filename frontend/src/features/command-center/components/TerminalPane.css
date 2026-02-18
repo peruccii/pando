@@ -1,0 +1,86 @@
+/* ============================================
+   TERMINAL PANE
+   ============================================ */
+
+.terminal-pane {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--terminal-bg);
+  transition: opacity var(--transition-normal);
+}
+
+.terminal-pane--active {
+  opacity: 1;
+}
+
+.terminal-pane--inactive {
+  opacity: 0.92;
+}
+
+.terminal-pane__container {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  padding: 4px 0 0 4px;
+}
+
+/* Override xterm styles */
+.terminal-pane .xterm {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.terminal-pane .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Cursor blink animation */
+.terminal-pane .xterm-cursor-layer {
+  z-index: 1;
+}
+
+/* Cursor awareness overlay */
+.terminal-pane__remote-cursor {
+  position: absolute;
+  top: 6px;
+  bottom: 8px;
+  width: 2px;
+  border-left: 2px solid var(--accent-primary);
+  pointer-events: none;
+  z-index: 12;
+  opacity: 0.9;
+}
+
+.terminal-pane__remote-cursor-label {
+  position: absolute;
+  top: -4px;
+  left: 4px;
+  font-size: 10px;
+  color: #0b0d13;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}

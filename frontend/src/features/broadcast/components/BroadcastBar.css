@@ -1,0 +1,210 @@
+/* ============================================
+   BROADCAST BAR — God Mode Input
+   ============================================ */
+
+.broadcast-shell {
+  width: 100%;
+  border-top: 1px solid var(--border-primary);
+  background: linear-gradient(180deg, var(--bg-secondary), var(--bg-tertiary));
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.2);
+  position: relative;
+  z-index: var(--z-base);
+}
+
+.broadcast-shell--active {
+  box-shadow: 0 -10px 20px rgba(var(--accent-rgb), 0.15);
+}
+
+.broadcast-shell__row {
+  height: var(--broadcast-bar-height);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+}
+
+.broadcast-shell__toggle {
+  border: 1px solid var(--border-primary);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.broadcast-shell__toggle:hover {
+  border-color: var(--border-focus);
+  color: var(--text-primary);
+}
+
+.broadcast-shell__toggle--active {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.broadcast-shell__targets {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.broadcast-shell__select {
+  border: 1px solid var(--border-primary);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  min-width: 110px;
+}
+
+.broadcast-shell__select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.broadcast-shell__count {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.broadcast-shell__input {
+  flex: 1;
+  min-width: 180px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.broadcast-shell__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+
+.broadcast-shell__input:disabled {
+  opacity: 0.6;
+}
+
+.broadcast-shell__send {
+  border: 1px solid var(--accent);
+  background: rgba(var(--accent-rgb), 0.15);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.broadcast-shell__send:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb), 0.25);
+}
+
+.broadcast-shell__send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.broadcast-shell__hint {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.broadcast-shell__custom {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border-secondary);
+}
+
+.broadcast-shell__custom-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.broadcast-shell__multi-select {
+  flex: 1;
+  min-height: 76px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: var(--space-2);
+}
+
+.broadcast-shell__feedback {
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--accent);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.broadcast-shell--active::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  animation: broadcastPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes broadcastPulse {
+  0% {
+    opacity: 0.3;
+    transform: scaleX(0.98);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scaleX(1);
+  }
+  100% {
+    opacity: 0.3;
+    transform: scaleX(0.98);
+  }
+}
+
+@media (max-width: 900px) {
+  .broadcast-shell__row {
+    flex-wrap: wrap;
+    height: auto;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .broadcast-shell__targets {
+    order: 2;
+  }
+
+  .broadcast-shell__input {
+    order: 3;
+    width: 100%;
+    min-width: 100%;
+  }
+
+  .broadcast-shell__send,
+  .broadcast-shell__hint {
+    order: 4;
+  }
+}

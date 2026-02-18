@@ -1,0 +1,26 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ORCH",
+  "outputfilename": "ORCH",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "productName": "ORCH",
+    "productVersion": "1.0.0",
+    "copyright": "© 2026 ORCH",
+    "comments": "Orchestrator Colaborativo de IA & GitHub para macOS",
+    "protocols": [
+      {
+        "scheme": "orch",
+        "description": "ORCH Deep Link",
+        "role": "Editor"
+      }
+    ]
+  },
+  "author": {
+    "name": "peruccii",
+    "email": "peruccii2917@hotmail.com"
+  }
+}

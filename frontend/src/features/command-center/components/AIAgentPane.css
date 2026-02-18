@@ -1,0 +1,43 @@
+.ai-agent-pane {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+}
+
+.ai-agent-pane__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: center;
+  padding: var(--space-6);
+  animation: fadeIn 0.3s ease;
+}
+
+.ai-agent-pane__icon {
+  font-size: 2.5rem;
+  opacity: 0.5;
+}
+
+.ai-agent-pane__title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.ai-agent-pane__subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  max-width: 280px;
+}
+
+.ai-agent-pane__features {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: var(--space-2);
+}
