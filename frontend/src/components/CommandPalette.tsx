@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Search, Terminal, GitBranch, Bot, Palette, Keyboard, Trash2, Maximize2, Settings2 } from 'lucide-react'
+import { Search, Terminal, GitBranch, Bot, Palette, Keyboard, Trash2, Maximize2, Settings2, Users, UserPlus } from 'lucide-react'
 import { useLayoutStore } from '../features/command-center/stores/layoutStore'
 import { useAppStore } from '../stores/appStore'
 import { formatShortcutBinding, resolveShortcutBindings } from '../features/shortcuts/shortcuts'
@@ -138,6 +138,22 @@ export function CommandPalette() {
       shortcut: shortcutLabels.openSettings,
       category: 'Geral',
       action: () => window.dispatchEvent(new CustomEvent('settings:toggle')),
+    },
+    {
+      id: 'collab-panel',
+      label: 'Colaboração: Painel',
+      description: 'Abrir painel de sessão e waiting room',
+      icon: <Users size={16} />,
+      category: 'Colaboração',
+      action: () => window.dispatchEvent(new CustomEvent('session:panel:open')),
+    },
+    {
+      id: 'collab-join',
+      label: 'Colaboração: Entrar',
+      description: 'Entrar com código de convite',
+      icon: <UserPlus size={16} />,
+      category: 'Colaboração',
+      action: () => window.dispatchEvent(new CustomEvent('session:join:open')),
     },
     {
       id: 'shortcuts',

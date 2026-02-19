@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +34,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const (
+	sessionGatewayAddr    = "127.0.0.1:9888"
+	sessionGatewayBaseURL = "http://" + sessionGatewayAddr
+)
+
 // App struct — ponto central do Wails, conecta todos os services
 type App struct {
 	ctx         context.Context
@@ -44,6 +53,7 @@ type App struct {
 	poller      *gh.Poller
 	session     *session.Service
 	signaling   *session.SignalingService
+	sessionHTTP *session.GatewayServer
 	ai          *ai.Service
 
 	logSanitizer      *security.LogSanitizer
@@ -63,6 +73,9 @@ type App struct {
 
 	gitIndexMu            sync.Mutex
 	lastIndexFingerprints map[string]string // repoPath -> fingerprint do estado staged
+	anonymousGuestID      string
+	sessionGatewayOwner   bool
+	sessionGatewayURL     string
 }
 
 // NewApp creates a new App application struct
@@ -72,6 +85,7 @@ func NewApp() *App {
 		terminalHistory:       make(map[string]string),
 		sessionAgents:         make(map[string]uint),
 		lastIndexFingerprints: make(map[string]string),
+		anonymousGuestID:      fmt.Sprintf("anonymous-%d", time.Now().UnixNano()),
 	}
 }
 
@@ -162,6 +176,8 @@ func (a *App) Startup(ctx context.Context) {
 	a.session = session.NewService(func(eventName string, data interface{}) {
 		runtime.EventsEmit(a.ctx, eventName, data)
 	})
+	a.restorePersistedSessionStates()
+
 	a.signaling = session.NewSignalingService(a.session)
 	a.signaling.SetConnectionObserver(func(sessionID, userID string, isHost bool, connected bool) {
 		if isHost {
@@ -178,6 +194,17 @@ func (a *App) Startup(ctx context.Context) {
 		log.Printf("[ORCH] Error starting signaling server: %v", err)
 	} else {
 		log.Println("[ORCH] Signaling server started on :9876")
+	}
+
+	// Iniciar gateway HTTP local de sessões (compartilha sessões entre instâncias locais).
+	a.sessionHTTP = session.NewGatewayServer(a.session, sessionGatewayAddr)
+	a.sessionHTTP.SetObservers(a.persistSessionState, a.deletePersistedSessionState)
+	if err := a.sessionHTTP.Start(); err != nil {
+		a.sessionGatewayOwner = false
+		log.Printf("[ORCH] Session gateway unavailable on %s (using client mode): %v", sessionGatewayAddr, err)
+	} else {
+		a.sessionGatewayOwner = true
+		log.Printf("[ORCH] Session gateway started on %s", sessionGatewayAddr)
 	}
 
 	// 9. Configuração finalizada
@@ -642,6 +669,15 @@ func (a *App) Shutdown(ctx context.Context) {
 		}
 	}
 
+	// Encerrar gateway HTTP de sessões
+	if a.sessionHTTP != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := a.sessionHTTP.Stop(shutdownCtx); err != nil {
+			log.Printf("[ORCH] Error stopping session gateway: %v", err)
+		}
+		cancel()
+	}
+
 	// Fechar conexão com banco
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
@@ -654,11 +690,13 @@ func (a *App) Shutdown(ctx context.Context) {
 // getHydrationPayload constrói o payload inicial
 func (a *App) getHydrationPayload() HydrationPayload {
 	payload := HydrationPayload{
-		IsAuthenticated:  false,
-		Theme:            "dark",
-		Language:         "pt-BR",
-		TerminalFontSize: 14,
-		Version:          config.AppVersion,
+		IsAuthenticated:     false,
+		Theme:               "dark",
+		Language:            "pt-BR",
+		TerminalFontSize:    14,
+		TerminalFontFamily:  defaultTerminalFontFamily,
+		TerminalCursorStyle: defaultTerminalCursorStyle,
+		Version:             config.AppVersion,
 	}
 
 	// Checar autenticação
@@ -682,6 +720,8 @@ func (a *App) getHydrationPayload() HydrationPayload {
 			}
 			payload.DefaultShell = cfg.DefaultShell
 			payload.TerminalFontSize = normalizeTerminalFontSize(cfg.FontSize)
+			payload.TerminalFontFamily = normalizeTerminalFontFamily(cfg.FontFamily)
+			payload.TerminalCursorStyle = normalizeTerminalCursorStyle(cfg.CursorStyle)
 			payload.OnboardingCompleted = cfg.OnboardingCompleted
 			payload.ShortcutBindings = cfg.ShortcutBindings
 		}
@@ -711,6 +751,8 @@ type HydrationPayload struct {
 	Language            string               `json:"language"`
 	DefaultShell        string               `json:"defaultShell"`
 	TerminalFontSize    int                  `json:"terminalFontSize"`
+	TerminalFontFamily  string               `json:"terminalFontFamily"`
+	TerminalCursorStyle string               `json:"terminalCursorStyle"`
 	OnboardingCompleted bool                 `json:"onboardingCompleted"`
 	ShortcutBindings    string               `json:"shortcutBindings,omitempty"`
 	Version             string               `json:"version"`
@@ -730,11 +772,14 @@ func (a *App) resolvePreferredLocalShell() string {
 
 // === Terminal Bindings (expostos ao Frontend) ===
 
-// CreateTerminal cria um novo terminal PTY e retorna o session ID
-func (a *App) CreateTerminal(shell string, cwd string, useDocker bool, cols uint16, rows uint16) (string, error) {
+func (a *App) createTerminalWithArgs(shell string, args []string, cwd string, useDocker bool, cols uint16, rows uint16) (string, error) {
 	shell = strings.TrimSpace(shell)
-	// Para terminais locais: Settings > auto-detect do shell da máquina.
-	if !useDocker && shell == "" {
+	if useDocker {
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+	} else if shell == "" {
+		// Para terminais locais: Settings > auto-detect do shell da máquina.
 		shell = a.resolvePreferredLocalShell()
 	}
 
@@ -752,6 +797,7 @@ func (a *App) CreateTerminal(shell string, cwd string, useDocker bool, cols uint
 
 	cfg := terminal.PTYConfig{
 		Shell:     shell,
+		Args:      append([]string(nil), args...),
 		Cwd:       cwd,
 		Cols:      cols,
 		Rows:      rows,
@@ -821,6 +867,35 @@ func (a *App) CreateTerminal(shell string, cwd string, useDocker bool, cols uint
 	return sessionID, nil
 }
 
+// CreateTerminal cria um novo terminal PTY e retorna o session ID
+func (a *App) CreateTerminal(shell string, cwd string, useDocker bool, cols uint16, rows uint16) (string, error) {
+	return a.createTerminalWithArgs(shell, nil, cwd, useDocker, cols, rows)
+}
+
+func (a *App) resolveEffectiveRuntimeShell(shell string, useDocker bool) string {
+	effectiveShell := strings.TrimSpace(shell)
+	if effectiveShell != "" {
+		return effectiveShell
+	}
+	if useDocker {
+		return "/bin/sh"
+	}
+	return a.resolvePreferredLocalShell()
+}
+
+func resumeCommandForCLI(cliType string) (string, bool) {
+	key := terminal.CLIType(strings.ToLower(strings.TrimSpace(cliType)))
+	command, ok := terminal.CLIResumeCommands[key]
+	if !ok || strings.TrimSpace(command) == "" {
+		return "", false
+	}
+	return command, true
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 // CreateTerminalForAgent cria (ou reutiliza) o PTY vinculado a um AgentSession.
 func (a *App) CreateTerminalForAgent(agentID uint, shell string, cwd string, useDocker bool, cols uint16, rows uint16) (string, error) {
 	if a.db == nil {
@@ -847,19 +922,12 @@ func (a *App) CreateTerminalForAgent(agentID uint, shell string, cwd string, use
 		resolvedCwd = agent.Cwd
 	}
 
-	sessionID, err := a.CreateTerminal(resolvedShell, resolvedCwd, useDocker, cols, rows)
+	sessionID, err := a.createTerminalWithArgs(resolvedShell, nil, resolvedCwd, useDocker, cols, rows)
 	if err != nil {
 		return "", err
 	}
 
-	effectiveShell := strings.TrimSpace(resolvedShell)
-	if effectiveShell == "" {
-		if useDocker {
-			effectiveShell = "/bin/sh"
-		} else {
-			effectiveShell = a.resolvePreferredLocalShell()
-		}
-	}
+	effectiveShell := a.resolveEffectiveRuntimeShell(resolvedShell, useDocker)
 
 	effectiveCwd := strings.TrimSpace(resolvedCwd)
 	if effectiveCwd == "" {
@@ -876,6 +944,69 @@ func (a *App) CreateTerminalForAgent(agentID uint, shell string, cwd string, use
 	return sessionID, nil
 }
 
+// CreateTerminalForAgentResume cria sessão já com comando de resume da CLI, sem "digitar" comando no terminal.
+func (a *App) CreateTerminalForAgentResume(agentID uint, cliType string, shell string, cwd string, useDocker bool, cols uint16, rows uint16) (string, error) {
+	if a.db == nil {
+		return "", fmt.Errorf("database not initialized")
+	}
+
+	agent, err := a.db.GetAgent(agentID)
+	if err != nil {
+		return "", err
+	}
+
+	if agent.SessionID != "" && a.bridge != nil && a.bridge.IsTerminalAlive(agent.SessionID) {
+		a.bindTerminalToAgent(agent.SessionID, agent.ID)
+		return agent.SessionID, nil
+	}
+
+	resumeCmd, ok := resumeCommandForCLI(cliType)
+	if !ok {
+		return "", fmt.Errorf("unsupported cliType for resume: %s", strings.TrimSpace(cliType))
+	}
+
+	resolvedShell := strings.TrimSpace(shell)
+	if useDocker {
+		if resolvedShell == "" {
+			resolvedShell = "/bin/sh"
+		}
+	} else if resolvedShell == "" {
+		if agentShell := strings.TrimSpace(agent.Shell); agentShell != "" {
+			resolvedShell = agentShell
+		} else {
+			resolvedShell = a.resolvePreferredLocalShell()
+		}
+	}
+
+	resolvedCwd := strings.TrimSpace(cwd)
+	if resolvedCwd == "" {
+		resolvedCwd = strings.TrimSpace(agent.Cwd)
+	}
+	if resolvedCwd == "" {
+		home, _ := os.UserHomeDir()
+		resolvedCwd = home
+	}
+
+	bootstrap := fmt.Sprintf("%s; exec %s -l", resumeCmd, shellSingleQuote(resolvedShell))
+	sessionID, err := a.createTerminalWithArgs(resolvedShell, []string{"-c", bootstrap}, resolvedCwd, useDocker, cols, rows)
+	if err != nil {
+		return "", err
+	}
+
+	effectiveShell := strings.TrimSpace(agent.Shell)
+	if effectiveShell == "" {
+		effectiveShell = a.resolveEffectiveRuntimeShell(shell, useDocker)
+	}
+
+	if err := a.db.UpdateAgentRuntime(agent.ID, sessionID, effectiveShell, resolvedCwd, useDocker, "running"); err != nil {
+		a.killTerminalSession(sessionID)
+		return "", err
+	}
+
+	a.bindTerminalToAgent(sessionID, agent.ID)
+	return sessionID, nil
+}
+
 // WriteTerminal envia dados para o terminal
 func (a *App) WriteTerminal(sessionID string, data string) error {
 	decoded := decodeTerminalInput(data)
@@ -884,7 +1015,10 @@ func (a *App) WriteTerminal(sessionID string, data string) error {
 		a.ai.ObserveTerminalInput(sessionID, decoded)
 	}
 
-	return a.bridge.WriteTerminal(sessionID, data)
+	if a.ptyMgr == nil {
+		return fmt.Errorf("pty manager not initialized")
+	}
+	return a.ptyMgr.Write(sessionID, decoded)
 }
 
 // WriteTerminalAsGuest envia input ao PTY com validação de permissão (read_write).
@@ -971,11 +1105,16 @@ func (a *App) AISetSessionState(sessionID string, state ai.SessionState) {
 }
 
 func decodeTerminalInput(data string) []byte {
-	decoded, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
-		return []byte(data)
+	// Input vindo do frontend local é enviado como texto bruto para reduzir
+	// overhead por tecla. Mantemos suporte opcional a payload base64 prefixado.
+	const b64Prefix = "b64:"
+	if strings.HasPrefix(data, b64Prefix) {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(data, b64Prefix))
+		if err == nil {
+			return decoded
+		}
 	}
-	return decoded
+	return []byte(data)
 }
 
 func (a *App) sanitizeForLogs(message string) string {
@@ -1473,6 +1612,9 @@ func normalizeLanguage(language string) string {
 	}
 }
 
+const defaultTerminalFontFamily = "JetBrains Mono"
+const defaultTerminalCursorStyle = "line"
+
 func normalizeTerminalFontSize(size int) int {
 	if size < 10 {
 		return 10
@@ -1481,6 +1623,45 @@ func normalizeTerminalFontSize(size int) int {
 		return 24
 	}
 	return size
+}
+
+func normalizeTerminalFontFamily(family string) string {
+	cleaned := strings.TrimSpace(family)
+	if cleaned == "" {
+		return defaultTerminalFontFamily
+	}
+
+	cleaned = strings.ReplaceAll(cleaned, "\n", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\r", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\t", " ")
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if cleaned == "" {
+		return defaultTerminalFontFamily
+	}
+
+	// Famílias iniciadas com "." são internas do sistema e não são estáveis no xterm.
+	if strings.HasPrefix(cleaned, ".") {
+		return defaultTerminalFontFamily
+	}
+
+	if len(cleaned) > 120 {
+		cleaned = strings.TrimSpace(cleaned[:120])
+	}
+
+	return cleaned
+}
+
+func normalizeTerminalCursorStyle(style string) string {
+	switch strings.ToLower(strings.TrimSpace(style)) {
+	case "block":
+		return "block"
+	case "underline", "under-line", "under_line":
+		return "underline"
+	case "line", "bar", "beam", "vertical":
+		return "line"
+	default:
+		return defaultTerminalCursorStyle
+	}
 }
 
 type shortcutBindingPayload struct {
@@ -1593,6 +1774,36 @@ func (a *App) SaveTerminalFontSize(size int) error {
 	return a.db.UpdateConfig(cfg)
 }
 
+// SaveTerminalFontFamily persiste a família de fonte do terminal.
+func (a *App) SaveTerminalFontFamily(family string) error {
+	if a.db == nil {
+		return nil
+	}
+
+	cfg, err := a.db.GetConfig()
+	if err != nil {
+		return err
+	}
+
+	cfg.FontFamily = normalizeTerminalFontFamily(family)
+	return a.db.UpdateConfig(cfg)
+}
+
+// SaveTerminalCursorStyle persiste o estilo do cursor do terminal.
+func (a *App) SaveTerminalCursorStyle(style string) error {
+	if a.db == nil {
+		return nil
+	}
+
+	cfg, err := a.db.GetConfig()
+	if err != nil {
+		return err
+	}
+
+	cfg.CursorStyle = normalizeTerminalCursorStyle(style)
+	return a.db.UpdateConfig(cfg)
+}
+
 // SaveShortcutBindings persiste os atalhos customizados do usuário como JSON.
 func (a *App) SaveShortcutBindings(bindingsJSON string) error {
 	if a.db == nil {
@@ -1616,6 +1827,11 @@ func (a *App) SaveShortcutBindings(bindingsJSON string) error {
 // GetAvailableShells retorna a lista de shells disponíveis no sistema.
 func (a *App) GetAvailableShells() ([]string, error) {
 	return terminal.GetAvailableShells(), nil
+}
+
+// GetAvailableTerminalFonts retorna famílias de fontes instaladas no sistema.
+func (a *App) GetAvailableTerminalFonts() ([]string, error) {
+	return terminal.GetAvailableFonts(), nil
 }
 
 // CompleteOnboarding marca onboarding como concluído.
@@ -1936,12 +2152,264 @@ func (a *App) GetRateLimitInfo() gh.RateLimitInfo {
 
 // === Session / P2P Bindings (expostos ao Frontend) ===
 
-// SessionCreate cria uma nova sessão de colaboração
-func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*session.Session, error) {
-	if a.session == nil {
-		return nil, fmt.Errorf("session service not initialized")
+type sessionGatewayErrorResponse struct {
+	Error string `json:"error"`
+}
+
+func (a *App) resolvedSessionGatewayBaseURL() string {
+	if a != nil {
+		if custom := strings.TrimSpace(a.sessionGatewayURL); custom != "" {
+			return strings.TrimRight(custom, "/")
+		}
+	}
+	return sessionGatewayBaseURL
+}
+
+func (a *App) callSessionGateway(method, path string, requestBody interface{}, responseBody interface{}) error {
+	var bodyReader io.Reader
+	if requestBody != nil {
+		payload, err := json.Marshal(requestBody)
+		if err != nil {
+			return fmt.Errorf("marshal gateway request: %w", err)
+		}
+		bodyReader = bytes.NewReader(payload)
 	}
 
+	req, err := http.NewRequest(method, a.resolvedSessionGatewayBaseURL()+path, bodyReader)
+	if err != nil {
+		return fmt.Errorf("create gateway request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("gateway request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var errPayload sessionGatewayErrorResponse
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&errPayload); decodeErr == nil && errPayload.Error != "" {
+			return errors.New(errPayload.Error)
+		}
+		return fmt.Errorf("gateway request failed with status %d", resp.StatusCode)
+	}
+
+	if responseBody == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(responseBody); err != nil {
+		return fmt.Errorf("decode gateway response: %w", err)
+	}
+	return nil
+}
+
+func (a *App) gatewayJoinSession(code, guestUserID string, guestInfo session.GuestInfo) (*session.JoinResult, error) {
+	var result session.JoinResult
+	err := a.callSessionGateway(http.MethodPost, "/api/session/join", map[string]interface{}{
+		"code":        code,
+		"guestUserID": guestUserID,
+		"guestInfo":   guestInfo,
+	}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewayCreateSession(hostUserID string, cfg session.SessionConfig) (*session.Session, error) {
+	var result session.Session
+	err := a.callSessionGateway(http.MethodPost, "/api/session/create", map[string]interface{}{
+		"hostUserID": hostUserID,
+		"config":     cfg,
+	}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewayGetSession(sessionID string) (*session.Session, error) {
+	var result session.Session
+	path := "/api/session/get?sessionID=" + url.QueryEscape(sessionID)
+	if err := a.callSessionGateway(http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewayGetActiveSession(userID string) (*session.Session, error) {
+	var result session.Session
+	path := "/api/session/active?userID=" + url.QueryEscape(userID)
+	if err := a.callSessionGateway(http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewayListPendingGuests(sessionID string) ([]session.GuestRequest, error) {
+	var result []session.GuestRequest
+	path := "/api/session/pending?sessionID=" + url.QueryEscape(sessionID)
+	if err := a.callSessionGateway(http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (a *App) gatewayApproveGuest(sessionID, guestUserID string) error {
+	return a.callSessionGateway(http.MethodPost, "/api/session/approve", map[string]interface{}{
+		"sessionID":   sessionID,
+		"guestUserID": guestUserID,
+	}, nil)
+}
+
+func (a *App) gatewayRejectGuest(sessionID, guestUserID string) error {
+	return a.callSessionGateway(http.MethodPost, "/api/session/reject", map[string]interface{}{
+		"sessionID":   sessionID,
+		"guestUserID": guestUserID,
+	}, nil)
+}
+
+func (a *App) gatewayEndSession(sessionID string) error {
+	return a.callSessionGateway(http.MethodPost, "/api/session/end", map[string]interface{}{
+		"sessionID": sessionID,
+	}, nil)
+}
+
+func (a *App) gatewaySetGuestPermission(sessionID, guestUserID, permission string) error {
+	return a.callSessionGateway(http.MethodPost, "/api/session/permission", map[string]interface{}{
+		"sessionID":   sessionID,
+		"guestUserID": guestUserID,
+		"permission":  permission,
+	}, nil)
+}
+
+func (a *App) gatewayKickGuest(sessionID, guestUserID string) error {
+	return a.callSessionGateway(http.MethodPost, "/api/session/kick", map[string]interface{}{
+		"sessionID":   sessionID,
+		"guestUserID": guestUserID,
+	}, nil)
+}
+
+func isSessionNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "session not found") || strings.Contains(msg, "session not found for code")
+}
+
+func sessionPersistUntil(sess *session.Session, now time.Time) time.Time {
+	if sess == nil {
+		return now.Add(30 * time.Minute)
+	}
+	if sess.Status == session.StatusWaiting {
+		if sess.ExpiresAt.After(now.Add(2 * time.Minute)) {
+			return sess.ExpiresAt
+		}
+		return now.Add(2 * time.Minute)
+	}
+	// Sessões ativas continuam válidas por uma janela curta pós-restart para retomada.
+	return now.Add(12 * time.Hour)
+}
+
+func (a *App) persistSessionState(sessionID string) {
+	if a.db == nil || a.session == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+
+	sess, err := a.session.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+	if sess.Status == session.StatusEnded {
+		a.deletePersistedSessionState(sessionID)
+		return
+	}
+
+	now := time.Now()
+	if sess.Status == session.StatusWaiting && now.After(sess.ExpiresAt) {
+		a.deletePersistedSessionState(sessionID)
+		return
+	}
+
+	payload, err := json.Marshal(sess)
+	if err != nil {
+		log.Printf("[ORCH][SESSION] failed to marshal session state %s: %v", sessionID, err)
+		return
+	}
+
+	state := &database.CollabSessionState{
+		SessionID:    sess.ID,
+		HostUserID:   sess.HostUserID,
+		Code:         sess.Code,
+		Status:       string(sess.Status),
+		ExpiresAt:    sess.ExpiresAt,
+		PersistUntil: sessionPersistUntil(sess, now),
+		Payload:      string(payload),
+	}
+	if err := a.db.UpsertCollabSessionState(state); err != nil {
+		log.Printf("[ORCH][SESSION] failed to persist session state %s: %v", sessionID, err)
+	}
+}
+
+func (a *App) deletePersistedSessionState(sessionID string) {
+	if a.db == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	if err := a.db.DeleteCollabSessionState(sessionID); err != nil {
+		log.Printf("[ORCH][SESSION] failed to delete persisted session state %s: %v", sessionID, err)
+	}
+}
+
+func (a *App) restorePersistedSessionStates() {
+	if a.db == nil || a.session == nil {
+		return
+	}
+
+	now := time.Now()
+	if err := a.db.CleanupExpiredCollabSessionStates(now); err != nil {
+		log.Printf("[ORCH][SESSION] cleanup persisted states failed: %v", err)
+	}
+
+	states, err := a.db.ListRestorableCollabSessionStates(now, 300)
+	if err != nil {
+		log.Printf("[ORCH][SESSION] failed to load persisted states: %v", err)
+		return
+	}
+
+	restoredCount := 0
+	for _, row := range states {
+		var restored session.Session
+		if err := json.Unmarshal([]byte(row.Payload), &restored); err != nil {
+			log.Printf("[ORCH][SESSION] invalid persisted payload sessionID=%s err=%v", row.SessionID, err)
+			a.deletePersistedSessionState(row.SessionID)
+			continue
+		}
+		if restored.ID == "" || restored.Status == session.StatusEnded {
+			a.deletePersistedSessionState(row.SessionID)
+			continue
+		}
+		if restored.Status == session.StatusWaiting && now.After(restored.ExpiresAt) {
+			a.deletePersistedSessionState(row.SessionID)
+			continue
+		}
+
+		if err := a.session.RestoreSession(&restored); err != nil {
+			log.Printf("[ORCH][SESSION] failed to restore session %s: %v", row.SessionID, err)
+			continue
+		}
+		restoredCount++
+	}
+
+	if restoredCount > 0 {
+		log.Printf("[ORCH][SESSION] restored %d session(s) from persistence", restoredCount)
+	}
+}
+
+// SessionCreate cria uma nova sessão de colaboração
+func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*session.Session, error) {
 	hostUserID := "local"
 	if a.auth != nil {
 		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
@@ -2019,13 +2487,36 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 		}
 	}
 
-	createdSession, err := a.session.CreateSession(hostUserID, cfg)
-	if err != nil {
-		if containerID != "" && a.docker != nil {
-			_ = a.docker.StopContainer(containerID)
-			_ = a.docker.RemoveContainer(containerID)
+	var (
+		createdSession *session.Session
+		err            error
+	)
+
+	if !a.sessionGatewayOwner {
+		createdSession, err = a.gatewayCreateSession(hostUserID, cfg)
+		if err != nil {
+			if containerID != "" && a.docker != nil {
+				_ = a.docker.StopContainer(containerID)
+				_ = a.docker.RemoveContainer(containerID)
+			}
+			return nil, fmt.Errorf("session gateway create failed in client mode: %w", err)
 		}
-		return nil, err
+	} else {
+		if a.session == nil {
+			if containerID != "" && a.docker != nil {
+				_ = a.docker.StopContainer(containerID)
+				_ = a.docker.RemoveContainer(containerID)
+			}
+			return nil, fmt.Errorf("session service not initialized")
+		}
+		createdSession, err = a.session.CreateSession(hostUserID, cfg)
+		if err != nil {
+			if containerID != "" && a.docker != nil {
+				_ = a.docker.StopContainer(containerID)
+				_ = a.docker.RemoveContainer(containerID)
+			}
+			return nil, err
+		}
 	}
 
 	if containerID != "" {
@@ -2033,17 +2524,16 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 		a.auditSessionEvent(createdSession.ID, hostUserID, "container_started", fmt.Sprintf("container=%s image=%s", containerID, cfg.DockerImage))
 	}
 	a.auditSessionEvent(createdSession.ID, hostUserID, "session_created", fmt.Sprintf("mode=%s allowAnonymous=%t", createdSession.Mode, allowAnonymous))
+	if a.sessionGatewayOwner {
+		a.persistSessionState(createdSession.ID)
+	}
 
 	return createdSession, nil
 }
 
 // SessionJoin entra em uma sessão usando um código
 func (a *App) SessionJoin(code string, name string, email string) (*session.JoinResult, error) {
-	if a.session == nil {
-		return nil, fmt.Errorf("session service not initialized")
-	}
-
-	guestUserID := "anonymous"
+	guestUserID := a.anonymousGuestID
 	avatarURL := ""
 	if a.auth != nil {
 		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
@@ -2062,50 +2552,88 @@ func (a *App) SessionJoin(code string, name string, email string) (*session.Join
 		name = "Anonymous Guest"
 	}
 
-	result, err := a.session.JoinSession(code, guestUserID, session.GuestInfo{
+	guestInfo := session.GuestInfo{
 		Name:      name,
 		Email:     email,
 		AvatarURL: avatarURL,
-	})
+	}
+
+	if a.session == nil || !a.sessionGatewayOwner {
+		result, err := a.gatewayJoinSession(code, guestUserID, guestInfo)
+		if err != nil {
+			if !a.sessionGatewayOwner {
+				return nil, fmt.Errorf("gateway join failed in client mode: %w", err)
+			}
+			return nil, fmt.Errorf("session service not initialized and gateway join failed: %w", err)
+		}
+		a.auditSessionEvent(result.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
+		return result, nil
+	}
+
+	result, err := a.session.JoinSession(code, guestUserID, guestInfo)
 	if err != nil {
+		// Fallback para gateway compartilhado em outra instância local.
+		if isSessionNotFoundErr(err) {
+			remoteResult, remoteErr := a.gatewayJoinSession(code, guestUserID, guestInfo)
+			if remoteErr != nil {
+				return nil, fmt.Errorf("%v (gateway fallback failed: %w)", err, remoteErr)
+			}
+			a.auditSessionEvent(remoteResult.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
+			return remoteResult, nil
+		}
 		return nil, err
 	}
 
 	a.auditSessionEvent(result.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
+	a.persistSessionState(result.SessionID)
 	return result, nil
 }
 
 // SessionApproveGuest aprova um guest na sessão
 func (a *App) SessionApproveGuest(sessionID, guestUserID string) error {
-	if a.session == nil {
-		return fmt.Errorf("session service not initialized")
+	var err error
+	if a.session == nil || !a.sessionGatewayOwner {
+		err = a.gatewayApproveGuest(sessionID, guestUserID)
+	} else {
+		err = a.session.ApproveGuest(sessionID, guestUserID)
+		if isSessionNotFoundErr(err) {
+			err = a.gatewayApproveGuest(sessionID, guestUserID)
+		}
 	}
-	if err := a.session.ApproveGuest(sessionID, guestUserID); err != nil {
+	if err != nil {
 		return err
 	}
 	a.auditSessionEvent(sessionID, guestUserID, "guest_approved", "Host approved guest in waiting room")
 	a.auditSessionEvent(sessionID, guestUserID, "guest_entered", "Guest admitted into collaboration session")
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
 	return nil
 }
 
 // SessionRejectGuest rejeita um guest na sessão
 func (a *App) SessionRejectGuest(sessionID, guestUserID string) error {
-	if a.session == nil {
-		return fmt.Errorf("session service not initialized")
+	var err error
+	if a.session == nil || !a.sessionGatewayOwner {
+		err = a.gatewayRejectGuest(sessionID, guestUserID)
+	} else {
+		err = a.session.RejectGuest(sessionID, guestUserID)
+		if isSessionNotFoundErr(err) {
+			err = a.gatewayRejectGuest(sessionID, guestUserID)
+		}
 	}
-	if err := a.session.RejectGuest(sessionID, guestUserID); err != nil {
+	if err != nil {
 		return err
 	}
 	a.auditSessionEvent(sessionID, guestUserID, "guest_rejected", "Host rejected guest in waiting room")
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
 	return nil
 }
 
 // SessionEnd encerra a sessão ativa
 func (a *App) SessionEnd(sessionID string) error {
-	if a.session == nil {
-		return fmt.Errorf("session service not initialized")
-	}
-
 	if containerID, ok := a.popSessionContainer(sessionID); ok && a.docker != nil {
 		if err := a.docker.StopContainer(containerID); err != nil {
 			log.Printf("[DOCKER] stop failed for %s: %s", containerID, a.sanitizeForLogs(err.Error()))
@@ -2116,28 +2644,54 @@ func (a *App) SessionEnd(sessionID string) error {
 		a.auditSessionEvent(sessionID, "system", "container_stopped", fmt.Sprintf("container=%s", containerID))
 	}
 
-	if err := a.session.EndSession(sessionID); err != nil {
+	var err error
+	if a.session == nil || !a.sessionGatewayOwner {
+		err = a.gatewayEndSession(sessionID)
+	} else {
+		err = a.session.EndSession(sessionID)
+		if isSessionNotFoundErr(err) {
+			err = a.gatewayEndSession(sessionID)
+		}
+	}
+	if err != nil {
 		return err
 	}
+	if a.sessionGatewayOwner && a.signaling != nil {
+		a.signaling.NotifySessionEnded(sessionID, "host")
+	}
 	a.auditSessionEvent(sessionID, "host", "session_ended", "Host ended the collaboration session")
+	a.deletePersistedSessionState(sessionID)
 	return nil
 }
 
 // SessionListPendingGuests lista pedidos de entrada pendentes
 func (a *App) SessionListPendingGuests(sessionID string) ([]session.GuestRequest, error) {
-	if a.session == nil {
-		return nil, fmt.Errorf("session service not initialized")
+	if a.session == nil || !a.sessionGatewayOwner {
+		return a.gatewayListPendingGuests(sessionID)
 	}
-	return a.session.ListPendingGuests(sessionID)
+	pending, err := a.session.ListPendingGuests(sessionID)
+	if err == nil {
+		return pending, nil
+	}
+	if isSessionNotFoundErr(err) {
+		return a.gatewayListPendingGuests(sessionID)
+	}
+	return nil, err
 }
 
 // SessionSetGuestPermission altera permissão de um guest
 func (a *App) SessionSetGuestPermission(sessionID, guestUserID, permission string) error {
-	if a.session == nil {
-		return fmt.Errorf("session service not initialized")
-	}
 	previousPerm := ""
-	if sess, err := a.session.GetSession(sessionID); err == nil && sess != nil {
+	if a.sessionGatewayOwner && a.session != nil {
+		if sess, err := a.session.GetSession(sessionID); err == nil && sess != nil {
+			for _, guest := range sess.Guests {
+				if guest.UserID == guestUserID {
+					previousPerm = string(guest.Permission)
+					break
+				}
+			}
+		}
+	} else if sess, err := a.gatewayGetSession(sessionID); err == nil && sess != nil {
 		for _, guest := range sess.Guests {
 			if guest.UserID == guestUserID {
 				previousPerm = string(guest.Permission)
@@ -2146,10 +2700,19 @@ func (a *App) SessionSetGuestPermission(sessionID, guestUserID, permission strin
 		}
 	}
 
-	if err := a.session.SetGuestPermission(sessionID, guestUserID, permission); err != nil {
+	var err error
+	if a.session == nil || !a.sessionGatewayOwner {
+		err = a.gatewaySetGuestPermission(sessionID, guestUserID, permission)
+	} else {
+		err = a.session.SetGuestPermission(sessionID, guestUserID, permission)
+		if isSessionNotFoundErr(err) {
+			err = a.gatewaySetGuestPermission(sessionID, guestUserID, permission)
+		}
+	}
+	if err != nil {
 		return err
 	}
-	if a.signaling != nil {
+	if a.sessionGatewayOwner && a.signaling != nil {
 		a.signaling.NotifyPermissionChange(sessionID, guestUserID, permission)
 	}
 	if permission == string(session.PermReadOnly) {
@@ -2160,28 +2723,36 @@ func (a *App) SessionSetGuestPermission(sessionID, guestUserID, permission strin
 		a.auditSessionEvent(sessionID, guestUserID, "permission_revoked", "Write permission revoked by host")
 	}
 	a.auditSessionEvent(sessionID, guestUserID, "permission_changed", fmt.Sprintf("from=%s to=%s", previousPerm, permission))
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
 	return nil
 }
 
 // SessionKickGuest remove um guest da sessão
 func (a *App) SessionKickGuest(sessionID, guestUserID string) error {
-	if a.session == nil {
-		return fmt.Errorf("session service not initialized")
+	var err error
+	if a.session == nil || !a.sessionGatewayOwner {
+		err = a.gatewayKickGuest(sessionID, guestUserID)
+	} else {
+		err = a.session.KickGuest(sessionID, guestUserID)
+		if isSessionNotFoundErr(err) {
+			err = a.gatewayKickGuest(sessionID, guestUserID)
+		}
 	}
-	if err := a.session.KickGuest(sessionID, guestUserID); err != nil {
+	if err != nil {
 		return err
 	}
 	a.auditSessionEvent(sessionID, guestUserID, "guest_kicked", "Guest removed by host")
 	a.auditSessionEvent(sessionID, guestUserID, "guest_left", "Guest left session after host removal")
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
 	return nil
 }
 
 // SessionGetActive retorna a sessão ativa do host
 func (a *App) SessionGetActive() (*session.Session, error) {
-	if a.session == nil {
-		return nil, fmt.Errorf("session service not initialized")
-	}
-
 	hostUserID := "local"
 	if a.auth != nil {
 		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
@@ -2189,15 +2760,37 @@ func (a *App) SessionGetActive() (*session.Session, error) {
 		}
 	}
 
-	return a.session.GetActiveSession(hostUserID)
+	// Instâncias em client-mode não devem hidratar sessão ativa como Host.
+	// Isso evita que um guest local assuma role=host por compartilhar o mesmo userID default.
+	if !a.sessionGatewayOwner {
+		return nil, fmt.Errorf("no active session in client mode")
+	}
+	if a.session == nil {
+		return nil, fmt.Errorf("session service not initialized")
+	}
+	current, err := a.session.GetActiveSession(hostUserID)
+	if err == nil {
+		return current, nil
+	}
+	if strings.Contains(err.Error(), "no active session") {
+		return a.gatewayGetActiveSession(hostUserID)
+	}
+	return nil, err
 }
 
 // SessionGetSession retorna detalhes de uma sessão
 func (a *App) SessionGetSession(sessionID string) (*session.Session, error) {
-	if a.session == nil {
-		return nil, fmt.Errorf("session service not initialized")
+	if a.session == nil || !a.sessionGatewayOwner {
+		return a.gatewayGetSession(sessionID)
 	}
-	return a.session.GetSession(sessionID)
+	current, err := a.session.GetSession(sessionID)
+	if err == nil {
+		return current, nil
+	}
+	if isSessionNotFoundErr(err) {
+		return a.gatewayGetSession(sessionID)
+	}
+	return nil, err
 }
 
 // SessionGetICEServers retorna a configuração de ICE servers
@@ -2589,6 +3182,10 @@ func (a *App) snapshotTerminalsOnShutdown() {
 
 		cliType := terminal.CLINone
 		cwd := sess.Cwd
+		paneID := a.resolvePaneIDFromSessionID(sess.ID)
+		if strings.TrimSpace(paneID) == "" {
+			paneID = sess.ID // fallback legado
+		}
 
 		if pid, err := a.ptyMgr.GetProcessPID(sess.ID); err == nil {
 			cliType = terminal.DetectCLI(pid)
@@ -2598,7 +3195,7 @@ func (a *App) snapshotTerminalsOnShutdown() {
 		}
 
 		snapshots = append(snapshots, database.TerminalSnapshot{
-			PaneID:  sess.ID, // Usa sessionID como paneID fallback
+			PaneID:  paneID,
 			CLIType: string(cliType),
 			Shell:   sess.Shell,
 			Cwd:     cwd,
@@ -2612,4 +3209,26 @@ func (a *App) snapshotTerminalsOnShutdown() {
 			log.Printf("[ORCH] Saved %d terminal snapshots (backend fallback)", len(snapshots))
 		}
 	}
+}
+
+func (a *App) resolvePaneIDFromSessionID(sessionID string) string {
+	if a.db == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+
+	workspaces, err := a.db.GetWorkspacesWithAgents()
+	if err != nil {
+		return ""
+	}
+
+	for _, ws := range workspaces {
+		for _, agent := range ws.Agents {
+			if strings.TrimSpace(agent.SessionID) != sessionID {
+				continue
+			}
+			return fmt.Sprintf("ws-%d-agent-%d", ws.ID, agent.ID)
+		}
+	}
+
+	return ""
 }

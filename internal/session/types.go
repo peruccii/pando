@@ -53,6 +53,7 @@ const (
 	GuestApproved  GuestStatus = "approved"
 	GuestRejected  GuestStatus = "rejected"
 	GuestConnected GuestStatus = "connected"
+	GuestExpired   GuestStatus = "expired"
 )
 
 // Permission define o nível de permissão
@@ -118,9 +119,12 @@ type GuestRequest struct {
 
 // JoinResult é o resultado de um JoinSession
 type JoinResult struct {
-	SessionID string `json:"sessionID"`
-	HostName  string `json:"hostName"`
-	Status    string `json:"status"` // "pending" — guest deve aguardar aprovação
+	SessionID         string    `json:"sessionID"`
+	SessionCode       string    `json:"sessionCode"`
+	HostName          string    `json:"hostName"`
+	Status            string    `json:"status"` // "pending" — guest deve aguardar aprovação
+	GuestUserID       string    `json:"guestUserID"`
+	ApprovalExpiresAt time.Time `json:"approvalExpiresAt,omitempty"`
 }
 
 // SignalMessage é uma mensagem trocada via WebSocket para signaling WebRTC

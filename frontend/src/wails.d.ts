@@ -49,12 +49,22 @@ declare global {
                         cols: number,
                         rows: number,
                     ) => Promise<string>;
+                    CreateTerminalForAgentResume: (
+                        agentID: number,
+                        cliType: string,
+                        shell: string,
+                        cwd: string,
+                        useDocker: boolean,
+                        cols: number,
+                        rows: number,
+                    ) => Promise<string>;
                     GetTerminals: () => Promise<any[]>;
                     IsTerminalAlive: (sessionID: string) => Promise<boolean>;
                     GetWorkspaceHistoryBuffer: (
                         workspaceID: number,
                     ) => Promise<Record<string, string>>;
                     GetAvailableShells: () => Promise<string[]>;
+                    GetAvailableTerminalFonts: () => Promise<string[]>;
 
                     // === Terminal Snapshots (Session Persistence) ===
                     SaveTerminalSnapshots: (
@@ -94,6 +104,7 @@ declare global {
                     SaveLanguage: (language: string) => Promise<void>;
                     SaveDefaultShell: (shell: string) => Promise<void>;
                     SaveTerminalFontSize: (size: number) => Promise<void>;
+                    SaveTerminalFontFamily: (family: string) => Promise<void>;
                     SaveShortcutBindings: (bindingsJSON: string) => Promise<void>;
                     CompleteOnboarding: () => Promise<void>;
 

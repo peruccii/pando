@@ -36,6 +36,8 @@ export function CreateTerminal(arg1:string,arg2:string,arg3:boolean,arg4:number,
 
 export function CreateTerminalForAgent(arg1:number,arg2:string,arg3:string,arg4:boolean,arg5:number,arg6:number):Promise<string>;
 
+export function CreateTerminalForAgentResume(arg1:number,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:number,arg7:number):Promise<string>;
+
 export function CreateWorkspace(arg1:string):Promise<database.Workspace>;
 
 export function DeleteAgent(arg1:number):Promise<void>;
@@ -91,6 +93,8 @@ export function GetAppInfo():Promise<Record<string, string>>;
 export function GetAuthState():Promise<auth.AuthState>;
 
 export function GetAvailableShells():Promise<Array<string>>;
+
+export function GetAvailableTerminalFonts():Promise<Array<string>>;
 
 export function GetCurrentBranch(arg1:string):Promise<string>;
 
@@ -151,6 +155,10 @@ export function SaveLanguage(arg1:string):Promise<void>;
 export function SaveLayoutState(arg1:string):Promise<void>;
 
 export function SaveShortcutBindings(arg1:string):Promise<void>;
+
+export function SaveTerminalCursorStyle(arg1:string):Promise<void>;
+
+export function SaveTerminalFontFamily(arg1:string):Promise<void>;
 
 export function SaveTerminalFontSize(arg1:number):Promise<void>;
 

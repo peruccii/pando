@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -94,6 +95,19 @@ func (m *PTYManager) Create(config PTYConfig) (string, error) {
 	if _, ok := envMap["LC_CTYPE"]; !ok {
 		envMap["LC_CTYPE"] = envMap["LANG"]
 	}
+	if !config.UseDocker {
+		// Apps GUI no macOS costumam iniciar com PATH incompleto (sem Homebrew),
+		// então enriquecemos com diretórios padrão para evitar "command not found".
+		envMap["PATH"] = enrichPATH(envMap["PATH"], runtime.GOOS)
+		if strings.TrimSpace(envMap["SHELL"]) == "" {
+			envMap["SHELL"] = config.Shell
+		}
+		if strings.TrimSpace(envMap["HOME"]) == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				envMap["HOME"] = home
+			}
+		}
+	}
 
 	var cmd *exec.Cmd
 	if config.UseDocker {
@@ -120,10 +134,13 @@ func (m *PTYManager) Create(config PTYConfig) (string, error) {
 		}
 
 		args = append(args, config.DockerImage, config.Shell)
+		if len(config.Args) > 0 {
+			args = append(args, config.Args...)
+		}
 		cmd = exec.Command("docker", args...)
 	} else {
 		// Modo Live Share/local: shell local no diretório corrente.
-		cmd = exec.Command(config.Shell)
+		cmd = exec.Command(config.Shell, config.Args...)
 		cmd.Dir = config.Cwd
 	}
 
@@ -173,6 +190,59 @@ func (m *PTYManager) Create(config PTYConfig) (string, error) {
 		sessionID, config.Shell, config.Cwd, config.UseDocker, config.Cols, config.Rows)
 
 	return sessionID, nil
+}
+
+func enrichPATH(pathValue, goos string) string {
+	entries := make([]string, 0, 16)
+	seen := make(map[string]struct{})
+	add := func(raw string) {
+		candidate := filepath.Clean(strings.TrimSpace(raw))
+		if candidate == "" || candidate == "." {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		entries = append(entries, candidate)
+	}
+
+	for _, segment := range filepath.SplitList(pathValue) {
+		add(segment)
+	}
+
+	for _, segment := range defaultPATHEntries(goos) {
+		add(segment)
+	}
+
+	return strings.Join(entries, string(os.PathListSeparator))
+}
+
+func defaultPATHEntries(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{
+			"/opt/homebrew/bin",
+			"/opt/homebrew/sbin",
+			"/usr/local/bin",
+			"/usr/local/sbin",
+			"/usr/bin",
+			"/bin",
+			"/usr/sbin",
+			"/sbin",
+		}
+	case "linux":
+		return []string{
+			"/usr/local/sbin",
+			"/usr/local/bin",
+			"/usr/sbin",
+			"/usr/bin",
+			"/sbin",
+			"/bin",
+		}
+	default:
+		return nil
+	}
 }
 
 // readLoop lê continuamente o output do PTY e notifica os handlers

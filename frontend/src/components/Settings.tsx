@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { X, Settings2, Github, LogOut, GitPullRequest, GitBranch, MessageSquare, Eye, CheckCircle, Move, Layers, Keyboard } from 'lucide-react'
+import { X, Settings2, Github, LogOut, GitPullRequest, GitBranch, MessageSquare, Eye, CheckCircle, Move, Layers, Keyboard, Type } from 'lucide-react'
 import {
   useAppStore,
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_CURSOR_STYLE,
   MIN_TERMINAL_FONT_SIZE,
   MAX_TERMINAL_FONT_SIZE,
   DEFAULT_TERMINAL_FONT_SIZE,
+  type TerminalCursorStyle,
 } from '../stores/appStore'
 import { useAuthStore } from '../stores/authStore'
 import { useI18n } from '../hooks/useI18n'
@@ -20,6 +23,7 @@ import {
   getShortcutSignature,
   resolveShortcutBindings,
 } from '../features/shortcuts/shortcuts'
+import { buildTerminalFontStack } from '../utils/terminal-fonts'
 import * as App from '../../wailsjs/go/main/App'
 import './Settings.css'
 
@@ -43,6 +47,35 @@ const DEFAULT_WINDOW: WindowState = {
 
 const MIN_WIDTH = 600
 const MIN_HEIGHT = 400
+const TERMINAL_PREVIEW_LINES = [
+  'perucci@orch ~ % git status',
+  'On branch feature/terminal-font-preview',
+  'Changes to be committed:',
+  '  modified: frontend/src/components/Settings.tsx',
+  '  modified: frontend/src/utils/terminal-fonts.ts',
+  '',
+  "perucci@orch ~ % echo 'Font preview ready'",
+  'Font preview ready',
+]
+
+const TERMINAL_CURSOR_STYLE_OPTIONS: TerminalCursorStyle[] = ['line', 'block', 'underline']
+
+const isSupportedTerminalFontFamily = (fontFamily: string): boolean => {
+  const normalized = fontFamily.trim()
+  if (normalized.length === 0) return false
+  if (normalized.startsWith('.')) return false
+
+  if (typeof document === 'undefined' || typeof document.fonts?.check !== 'function') {
+    return true
+  }
+
+  const escaped = normalized.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  try {
+    return document.fonts.check(`12px "${escaped}"`)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Settings Window — janela flutuante de configurações do ORCH
@@ -50,9 +83,11 @@ const MIN_HEIGHT = 400
  */
 export function Settings() {
   const [isOpen, setIsOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'general' | 'github' | 'sync' | 'appearance' | 'stacks' | 'shortcuts'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'github' | 'sync' | 'appearance' | 'terminal' | 'stacks' | 'shortcuts'>('general')
   const [windowState, setWindowState] = useState<WindowState>(DEFAULT_WINDOW)
   const [availableShells, setAvailableShells] = useState<string[]>([])
+  const [availableTerminalFonts, setAvailableTerminalFonts] = useState<string[]>([])
+  const [isLoadingTerminalFonts, setIsLoadingTerminalFonts] = useState(false)
   const [capturingShortcutId, setCapturingShortcutId] = useState<ShortcutId | null>(null)
   const [shortcutMessage, setShortcutMessage] = useState<string>('')
   const { t } = useI18n()
@@ -72,7 +107,11 @@ export function Settings() {
   const defaultShell = useAppStore((s) => s.defaultShell)
   const setDefaultShell = useAppStore((s) => s.setDefaultShell)
   const terminalFontSize = useAppStore((s) => s.terminalFontSize)
+  const terminalFontFamily = useAppStore((s) => s.terminalFontFamily)
+  const terminalCursorStyle = useAppStore((s) => s.terminalCursorStyle)
   const setTerminalFontSize = useAppStore((s) => s.setTerminalFontSize)
+  const setTerminalFontFamily = useAppStore((s) => s.setTerminalFontFamily)
+  const setTerminalCursorStyle = useAppStore((s) => s.setTerminalCursorStyle)
   const resetTerminalZoom = useAppStore((s) => s.resetTerminalZoom)
   const scrollSyncSettings = useAppStore((s) => s.scrollSyncSettings)
   const setScrollSyncSettings = useAppStore((s) => s.setScrollSyncSettings)
@@ -112,14 +151,97 @@ export function Settings() {
     return grouped
   }, [resolvedShortcutBindings])
 
+  const terminalFontOptions = useMemo(() => {
+    const deduped = new Map<string, string>()
+    const normalizedSelected = terminalFontFamily.trim()
+
+    if (isSupportedTerminalFontFamily(normalizedSelected)) {
+      deduped.set(normalizedSelected.toLowerCase(), normalizedSelected)
+    }
+
+    for (const font of availableTerminalFonts) {
+      const normalized = font.trim()
+      if (!isSupportedTerminalFontFamily(normalized)) continue
+      const key = normalized.toLowerCase()
+      if (!deduped.has(key)) {
+        deduped.set(key, normalized)
+      }
+    }
+
+    if (deduped.size === 0) {
+      return [DEFAULT_TERMINAL_FONT_FAMILY]
+    }
+
+    return Array.from(deduped.values())
+  }, [availableTerminalFonts, terminalFontFamily])
+
+  const terminalPreviewFontStack = useMemo(
+    () => buildTerminalFontStack(terminalFontFamily),
+    [terminalFontFamily],
+  )
+
+  useEffect(() => {
+    if (!isOpen || isLoadingTerminalFonts) return
+    if (isSupportedTerminalFontFamily(terminalFontFamily)) return
+
+    const fallback = terminalFontOptions[0] || DEFAULT_TERMINAL_FONT_FAMILY
+    setTerminalFontFamily(fallback)
+  }, [isLoadingTerminalFonts, isOpen, setTerminalFontFamily, terminalFontFamily, terminalFontOptions])
+
   // Auth state
   const { isAuthenticated, user, isLoading: authLoading } = useAuthStore()
 
   useEffect(() => {
-    if (isOpen) {
-      App.GetAvailableShells()
-        .then(setAvailableShells)
-        .catch(err => console.error('Failed to fetch shells:', err))
+    if (!isOpen) return
+
+    let cancelled = false
+
+    App.GetAvailableShells()
+      .then((shells) => {
+        if (!cancelled) {
+          setAvailableShells(shells)
+        }
+      })
+      .catch(err => console.error('Failed to fetch shells:', err))
+
+    const appBindings = window.go?.main?.App as {
+      GetAvailableTerminalFonts?: () => Promise<string[]>
+    } | undefined
+
+    if (!appBindings?.GetAvailableTerminalFonts) {
+      setAvailableTerminalFonts([DEFAULT_TERMINAL_FONT_FAMILY])
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setIsLoadingTerminalFonts(true)
+    appBindings.GetAvailableTerminalFonts()
+      .then((fonts) => {
+        if (cancelled) return
+        const uniqueFonts = Array.from(
+          new Set(
+            fonts
+              .map((font) => font.trim())
+              .filter((font) => isSupportedTerminalFontFamily(font)),
+          ),
+        )
+        setAvailableTerminalFonts(uniqueFonts)
+      })
+      .catch((err) => {
+        console.error('Failed to fetch terminal fonts:', err)
+        if (!cancelled) {
+          setAvailableTerminalFonts([DEFAULT_TERMINAL_FONT_FAMILY])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingTerminalFonts(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
     }
   }, [isOpen])
 
@@ -442,6 +564,13 @@ export function Settings() {
             {t('settings.tabs.appearance')}
           </button>
           <button
+            className={`settings-sidebar__item ${activeTab === 'terminal' ? 'settings-sidebar__item--active' : ''}`}
+            onClick={() => setActiveTab('terminal')}
+          >
+            <Type size={14} style={{ marginRight: 8 }} />
+            {t('settings.tabs.terminal')}
+          </button>
+          <button
             className={`settings-sidebar__item ${activeTab === 'shortcuts' ? 'settings-sidebar__item--active' : ''}`}
             onClick={() => setActiveTab('shortcuts')}
           >
@@ -727,6 +856,77 @@ export function Settings() {
                       {t('settings.appearance.terminalZoom.reset')}
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'terminal' && (
+            <div className="settings-section">
+              <h3 className="settings-section__title">{t('settings.terminal.title')}</h3>
+              <p className="settings-section__description">
+                {t('settings.terminal.description')}
+              </p>
+
+              <div className="settings-form-group">
+                <label className="settings-label">{t('settings.terminal.fontFamily')}</label>
+                <p className="settings-field-description">{t('settings.terminal.fontFamily.description')}</p>
+                <select
+                  className="settings-select"
+                  value={terminalFontFamily}
+                  onChange={(e) => setTerminalFontFamily(e.target.value)}
+                  disabled={isLoadingTerminalFonts}
+                >
+                  {terminalFontOptions.map((font) => (
+                    <option key={font} value={font}>
+                      {font}
+                    </option>
+                  ))}
+                </select>
+                {isLoadingTerminalFonts && (
+                  <p className="settings-field-description">{t('settings.terminal.fontFamily.loading')}</p>
+                )}
+                {!isLoadingTerminalFonts && availableTerminalFonts.length === 0 && (
+                  <p className="settings-field-description">{t('settings.terminal.fontFamily.fallback')}</p>
+                )}
+              </div>
+
+              <div className="settings-form-group">
+                <label className="settings-label">{t('settings.terminal.cursorStyle')}</label>
+                <p className="settings-field-description">{t('settings.terminal.cursorStyle.description')}</p>
+                <select
+                  className="settings-select"
+                  value={terminalCursorStyle || DEFAULT_TERMINAL_CURSOR_STYLE}
+                  onChange={(e) => setTerminalCursorStyle(e.target.value as TerminalCursorStyle)}
+                >
+                  {TERMINAL_CURSOR_STYLE_OPTIONS.map((style) => (
+                    <option key={style} value={style}>
+                      {t(`settings.terminal.cursorStyle.${style}`)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="settings-form-group">
+                <label className="settings-label">{t('settings.terminal.preview.title')}</label>
+                <p className="settings-field-description">{t('settings.terminal.preview.description')}</p>
+
+                <div className="settings-terminal-preview">
+                  <div className="settings-terminal-preview__header">
+                    <span className="settings-terminal-preview__dot settings-terminal-preview__dot--red" />
+                    <span className="settings-terminal-preview__dot settings-terminal-preview__dot--yellow" />
+                    <span className="settings-terminal-preview__dot settings-terminal-preview__dot--green" />
+                    <span className="settings-terminal-preview__title">ORCH Preview</span>
+                  </div>
+                  <pre
+                    className="settings-terminal-preview__body"
+                    style={{
+                      fontFamily: terminalPreviewFontStack,
+                      fontSize: `${terminalFontSize}px`,
+                    }}
+                  >
+                    {TERMINAL_PREVIEW_LINES.join('\n')}
+                  </pre>
                 </div>
               </div>
             </div>

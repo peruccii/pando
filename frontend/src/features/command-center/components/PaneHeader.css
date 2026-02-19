@@ -31,19 +31,6 @@
 .pane-header--active {
   background: var(--bg-tertiary);
   color: var(--text-primary);
-  position: relative;
-}
-
-.pane-header--active::before {
-  content: '';
-  position: absolute;
-  top: -1px; /* Sobrepõe exatamente a borda superior do container */
-  left: -1px;
-  right: -1px;
-  height: 2px;
-  background: var(--accent);
-  box-shadow: 0 2px 4px rgba(var(--accent-rgb), 0.2);
-  z-index: 10;
 }
 
 .pane-header--broadcast {

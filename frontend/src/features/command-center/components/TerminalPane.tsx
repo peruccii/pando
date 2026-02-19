@@ -6,9 +6,11 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useLayoutStore } from '../stores/layoutStore'
 import { useAppStore } from '../../../stores/appStore'
+import type { TerminalCursorStyle } from '../../../stores/appStore'
 import { useWorkspaceStore } from '../../../stores/workspaceStore'
 import { TERMINAL_THEMES } from '../types/layout'
 import { getResumeCommand } from '../../../utils/cli-resume'
+import { buildTerminalFontStack } from '../../../utils/terminal-fonts'
 import './TerminalPane.css'
 
 interface TerminalPaneProps {
@@ -27,6 +29,14 @@ interface RemoteCursor {
 }
 
 const MAX_TERMINAL_RING_BYTES = 64 * 1024
+const MAX_TERMINAL_INPUT_BYTES = 8 * 1024
+const INPUT_FLUSH_DELAY_MS = 6
+
+const resolveXtermCursorStyle = (style: TerminalCursorStyle): 'bar' | 'block' | 'underline' => {
+  if (style === 'block') return 'block'
+  if (style === 'underline') return 'underline'
+  return 'bar'
+}
 
 /**
  * TerminalPane — painel de terminal com xterm.js.
@@ -42,6 +52,10 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
   const outputQueueRef = useRef<string[]>([])
   const queuedBytesRef = useRef(0)
   const flushTimerRef = useRef<number | null>(null)
+  const inputQueueRef = useRef<string[]>([])
+  const queuedInputBytesRef = useRef(0)
+  const inputFlushTimerRef = useRef<number | null>(null)
+  const userScrollbackDistanceRef = useRef(0)
   const historyAppliedRef = useRef(false)
   const preserveSessionOnUnmountRef = useRef(false)
 
@@ -52,6 +66,8 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
 
   const theme = useAppStore((s) => s.theme)
   const terminalFontSize = useAppStore((s) => s.terminalFontSize)
+  const terminalFontFamily = useAppStore((s) => s.terminalFontFamily)
+  const terminalCursorStyle = useAppStore((s) => s.terminalCursorStyle)
   const paneCount = useLayoutStore((s) => s.paneOrder.length)
   const setPaneSessionID = useLayoutStore((s) => s.setPaneSessionID)
   const updatePaneStatus = useLayoutStore((s) => s.updatePaneStatus)
@@ -62,12 +78,6 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
   const isHighDensity = paneCount >= 10
   const agentHistoryBuffer = pane?.agentDBID ? (historyByAgentId[pane.agentDBID] || '') : ''
 
-  const encodeInputToBase64 = useCallback((data: string): string => {
-    const bytes = new TextEncoder().encode(data)
-    const binaryString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')
-    return btoa(binaryString)
-  }, [])
-
   const flushOutput = useCallback(() => {
     const terminal = terminalRef.current
     if (!terminal || outputQueueRef.current.length === 0) {
@@ -77,7 +87,18 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
     const merged = outputQueueRef.current.join('')
     outputQueueRef.current = []
     queuedBytesRef.current = 0
-    terminal.write(merged)
+
+    // Se usuário saiu do fim do buffer, preserva distância do bottom durante novos chunks.
+    terminal.write(merged, () => {
+      const distanceFromBottom = userScrollbackDistanceRef.current
+      if (distanceFromBottom <= 0) return
+
+      const buffer = terminal.buffer.active
+      const targetY = Math.max(0, buffer.baseY - distanceFromBottom)
+      if (buffer.viewportY !== targetY) {
+        terminal.scrollToLine(targetY)
+      }
+    })
   }, [])
 
   const scheduleFlush = useCallback(() => {
@@ -111,12 +132,60 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
     scheduleFlush()
   }, [flushOutput, isActive, isHighDensity, scheduleFlush])
 
-  // Limpeza de timer de flush
+  const flushInput = useCallback(() => {
+    const sessionID = sessionIDRef.current
+    if (!sessionID || inputQueueRef.current.length === 0) {
+      return
+    }
+
+    const payload = inputQueueRef.current.join('')
+    inputQueueRef.current = []
+    queuedInputBytesRef.current = 0
+
+    window.go?.main?.App?.WriteTerminal(sessionID, payload).catch((err: Error) => {
+      console.error('[Terminal] Write error:', err)
+    })
+  }, [])
+
+  const scheduleInputFlush = useCallback(() => {
+    if (inputFlushTimerRef.current !== null) {
+      return
+    }
+
+    inputFlushTimerRef.current = window.setTimeout(() => {
+      inputFlushTimerRef.current = null
+      flushInput()
+    }, INPUT_FLUSH_DELAY_MS)
+  }, [flushInput])
+
+  const enqueueInput = useCallback((data: string) => {
+    if (!data) return
+
+    inputQueueRef.current.push(data)
+    queuedInputBytesRef.current += data.length
+
+    if (
+      queuedInputBytesRef.current >= MAX_TERMINAL_INPUT_BYTES ||
+      data.includes('\n') ||
+      data.includes('\r')
+    ) {
+      flushInput()
+      return
+    }
+
+    scheduleInputFlush()
+  }, [flushInput, scheduleInputFlush])
+
+  // Limpeza de timers de flush
   useEffect(() => {
     return () => {
       if (flushTimerRef.current !== null) {
         window.clearTimeout(flushTimerRef.current)
         flushTimerRef.current = null
+      }
+      if (inputFlushTimerRef.current !== null) {
+        window.clearTimeout(inputFlushTimerRef.current)
+        inputFlushTimerRef.current = null
       }
     }
   }, [])
@@ -167,8 +236,8 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
 
     const terminal = new Terminal({
       cursorBlink: true,
-      cursorStyle: 'bar',
-      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
+      cursorStyle: resolveXtermCursorStyle(terminalCursorStyle),
+      fontFamily: buildTerminalFontStack(terminalFontFamily),
       fontSize: terminalFontSize,
       lineHeight: 1.4,
       letterSpacing: 0,
@@ -193,11 +262,7 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
 
         // Escreve apenas no keydown para evitar duplicidade.
         if (e.type === 'keydown') {
-          const sessionID = sessionIDRef.current
-          if (sessionID) {
-            const encoded = encodeInputToBase64('\n')
-            window.go?.main?.App?.WriteTerminal(sessionID, encoded).catch(() => { })
-          }
+          enqueueInput('\n')
 
           window.dispatchEvent(new CustomEvent('session:shared-input:append', {
             detail: { input: '\n' },
@@ -222,6 +287,11 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
 
     terminal.open(containerRef.current)
 
+    const scrollDisposable = terminal.onScroll(() => {
+      const buffer = terminal.buffer.active
+      userScrollbackDistanceRef.current = Math.max(0, buffer.baseY - buffer.viewportY)
+    })
+
     // Fit inicial com atraso mínimo para garantir que o container DOM esteja estável
     setTimeout(() => {
       if (fitAddonRef.current) {
@@ -241,6 +311,8 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
     preserveSessionOnUnmountRef.current = Boolean(pane?.agentDBID)
 
     return () => {
+      flushInput()
+
       // Em panes ligados a AgentSession, o processo permanece vivo ao trocar de aba/workspace.
       if (!preserveSessionOnUnmountRef.current && sessionIDRef.current && window.go?.main?.App) {
         window.go.main.App.DestroyTerminal(sessionIDRef.current).catch(() => { })
@@ -257,6 +329,7 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
       eventOffsRef.current = []
 
       // Cleanup xterm addons
+      scrollDisposable.dispose()
       searchAddon.dispose()
       fitAddon.dispose()
       terminal.dispose()
@@ -266,7 +339,7 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
       webglAddonRef.current = null
       sessionIDRef.current = null
     }
-  }, []) // Only run once on mount
+  }, [enqueueInput, flushInput]) // Only run once on mount
 
   /** Criar sessão PTY e configurar streaming */
   const createPTYSession = useCallback(async (terminal: Terminal, fitAddon: FitAddon, cols?: number, rows?: number) => {
@@ -287,16 +360,34 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
       // Local sem snapshot: backend resolve shell via Settings/auto-detect.
       // Docker sem snapshot: backend usa shell padrão do container.
       const initialShell = snapshot?.shell || ''
+      const agentDBID = pane?.agentDBID
+      const resumeCLIType = (snapshot?.cliType || '').trim()
+      const canResumeViaBackend = Boolean(
+        resumeCLIType &&
+        agentDBID &&
+        window.go?.main?.App?.CreateTerminalForAgentResume,
+      )
 
       // Criar ou reutilizar terminal no backend
-      const sessionID = pane?.agentDBID && window.go?.main?.App?.CreateTerminalForAgent
-        ? await window.go.main.App.CreateTerminalForAgent(pane.agentDBID, initialShell, initialCwd, useDocker, cols || 80, rows || 24)
-        : await window.go?.main?.App?.CreateTerminal?.(initialShell, initialCwd, useDocker, cols || 80, rows || 24)
+      const sessionID = canResumeViaBackend
+        ? await window.go.main.App.CreateTerminalForAgentResume(
+          agentDBID as number,
+          resumeCLIType,
+          initialShell,
+          initialCwd,
+          useDocker,
+          cols || 80,
+          rows || 24,
+        )
+        : pane?.agentDBID && window.go?.main?.App?.CreateTerminalForAgent
+          ? await window.go.main.App.CreateTerminalForAgent(pane.agentDBID, initialShell, initialCwd, useDocker, cols || 80, rows || 24)
+          : await window.go?.main?.App?.CreateTerminal?.(initialShell, initialCwd, useDocker, cols || 80, rows || 24)
       if (!sessionID) throw new Error('Failed to create terminal session')
 
       sessionIDRef.current = sessionID
       setPaneSessionID(paneId, sessionID)
       updatePaneStatus(paneId, 'running')
+      flushInput()
 
       if (agentHistoryBuffer && !historyAppliedRef.current) {
         terminal.write(agentHistoryBuffer)
@@ -341,13 +432,7 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
 
       // Enviar input do terminal para o backend
       terminal.onData((data: string) => {
-        if (sessionIDRef.current) {
-          const encoded = encodeInputToBase64(data)
-
-          window.go?.main?.App?.WriteTerminal(sessionIDRef.current, encoded).catch((err: Error) => {
-            console.error('[Terminal] Write error:', err)
-          })
-        }
+        enqueueInput(data)
 
         window.dispatchEvent(new CustomEvent('session:shared-input:append', {
           detail: { input: data },
@@ -376,15 +461,15 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
         fitAddon.fit()
       })
 
-      // Se havia uma CLI ativa no snapshot, enviar comando de resume
-      if (snapshot?.cliType) {
+      // Fallback legado: se não conseguimos resume silencioso no backend,
+      // enviar comando manual após shell inicializar.
+      if (resumeCLIType && !canResumeViaBackend) {
         setTimeout(async () => {
-          const resumeCmd = getResumeCommand(snapshot.cliType || '')
+          const resumeCmd = getResumeCommand(resumeCLIType)
           if (resumeCmd && sessionIDRef.current === sessionID) {
             console.log(`[Terminal] Resuming CLI session: ${resumeCmd}`)
-            const encoded = btoa(unescape(encodeURIComponent(resumeCmd + '\n')))
             try {
-              await window.go?.main?.App?.WriteTerminal?.(sessionID, encoded)
+              await window.go?.main?.App?.WriteTerminal?.(sessionID, resumeCmd + '\n')
             } catch (err) {
               console.error('[Terminal] Failed to send resume command:', err)
             }
@@ -397,7 +482,7 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
       terminal.write('\r\n  \x1b[31mErro ao criar sessão de terminal\x1b[0m\r\n')
       updatePaneStatus(paneId, 'error')
     }
-  }, [agentHistoryBuffer, encodeInputToBase64, enqueueOutput, pane, paneId, setPaneSessionID, updatePaneStatus])
+  }, [agentHistoryBuffer, enqueueInput, enqueueOutput, pane, paneId, setPaneSessionID, updatePaneStatus])
 
   /** ResizeObserver para refit automático */
   useEffect(() => {
@@ -440,6 +525,24 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
     })
   }, [terminalFontSize])
 
+  /** Atualizar família de fonte do terminal */
+  useEffect(() => {
+    if (!terminalRef.current) return
+    terminalRef.current.options.fontFamily = buildTerminalFontStack(terminalFontFamily)
+    requestAnimationFrame(() => {
+      fitAddonRef.current?.fit()
+      if (containerRef.current) {
+        setContainerWidth(containerRef.current.clientWidth)
+      }
+    })
+  }, [terminalFontFamily])
+
+  /** Atualizar estilo do cursor do terminal */
+  useEffect(() => {
+    if (!terminalRef.current) return
+    terminalRef.current.options.cursorStyle = resolveXtermCursorStyle(terminalCursorStyle)
+  }, [terminalCursorStyle])
+
   /** Focar o terminal quando o painel fica ativo */
   useEffect(() => {
     if (isActive && terminalRef.current) {
@@ -470,6 +573,12 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
     return Object.values(remoteCursors).slice(0, 6)
   }, [remoteCursors])
 
+  const focusTerminalIfActive = useCallback(() => {
+    if (isActive) {
+      terminalRef.current?.focus()
+    }
+  }, [isActive])
+
   return (
     <div
       className={`terminal-pane ${isActive ? 'terminal-pane--active' : 'terminal-pane--inactive'}`}
@@ -479,6 +588,8 @@ export function TerminalPane({ paneId, isActive }: TerminalPaneProps) {
       <div
         ref={containerRef}
         className="terminal-pane__container"
+        onMouseEnter={focusTerminalIfActive}
+        onMouseDown={focusTerminalIfActive}
       />
 
       {visibleRemoteCursors.map((cursor) => {

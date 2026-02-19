@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Container, Laptop, AlertTriangle } from 'lucide-react'
+import { Container, Laptop, AlertTriangle, X, Shield, Users } from 'lucide-react'
 import { useWorkspaceStore } from '../stores/workspaceStore'
 import './NewTerminalDialog.css'
 
@@ -15,7 +15,6 @@ export function NewTerminalDialog() {
         const available = await window.go.main.App.DockerIsAvailable()
         setIsDockerAvailable(available)
       } else {
-        // Fallback for dev without backend
         setIsDockerAvailable(false)
       }
     } catch (err) {
@@ -29,6 +28,7 @@ export function NewTerminalDialog() {
       setIsOpen((v) => !v)
       if (!isOpen) {
         checkDocker()
+        setErrorMessage(null)
       }
     }
     window.addEventListener('new-terminal:toggle', handleToggle)
@@ -44,11 +44,10 @@ export function NewTerminalDialog() {
       setIsOpen(false)
     } catch (err) {
       console.error('[NewTerminal] Failed to create terminal:', err)
-      setErrorMessage(err instanceof Error ? err.message : 'falha ao criar terminal')
+      setErrorMessage(err instanceof Error ? err.message : 'Falha ao criar terminal')
     }
   }
 
-  // Close on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isOpen && e.key === 'Escape') {
@@ -64,63 +63,106 @@ export function NewTerminalDialog() {
   return (
     <div className="new-terminal-dialog-backdrop" onClick={() => setIsOpen(false)}>
       <div className="new-terminal-dialog" onClick={(e) => e.stopPropagation()}>
-        <h2 className="new-terminal-dialog__title">Novo Terminal</h2>
+        <div className="new-terminal-dialog__header">
+          <div className="new-terminal-dialog__title-group">
+            <h2 className="new-terminal-dialog__title">Novo Terminal</h2>
+            <p className="new-terminal-dialog__subtitle">Escolha o ambiente para sua nova sessão</p>
+          </div>
+          <button className="new-terminal-dialog__close" onClick={() => setIsOpen(false)}>
+            <X size={18} />
+          </button>
+        </div>
         
         <div className="new-terminal-dialog__options">
           {/* Option: Docker */}
-          <button 
-            className={`new-terminal-option ${!isDockerAvailable ? 'new-terminal-option--disabled' : ''}`}
-            onClick={() => handleSelect(true)}
-            disabled={!isDockerAvailable}
-            title={!isDockerAvailable ? "Docker não detectado ou não iniciado" : "Terminal isolado em container"}
+          <div 
+            className={`new-terminal-card new-terminal-card--recommended ${!isDockerAvailable ? 'new-terminal-card--disabled' : ''}`}
+            onClick={() => isDockerAvailable && handleSelect(true)}
           >
-            <div className="new-terminal-option__header">
-              <Container size={20} className={isDockerAvailable ? "text-success" : "text-muted"} />
-              <span>Docker Container</span>
-              {isDockerAvailable && <span className="new-terminal-option__badge new-terminal-option__badge--secure">Seguro</span>}
+            <div className="new-terminal-card__icon-wrapper new-terminal-card__icon-wrapper--docker">
+              <Container size={24} />
             </div>
-            <p className="new-terminal-option__desc">
-              Terminal isolado do seu sistema. Guest tem permissão total (root) dentro do container.
-            </p>
-            {!isDockerAvailable && (
-              <div className="text-xs text-warning flex items-center gap-1 mt-1">
-                <AlertTriangle size={12} />
-                Docker não disponível. 
-                <a 
-                  href="https://www.docker.com/products/docker-desktop/" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-accent hover:underline ml-1"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  Instalar Docker
-                </a>
+            <div className="new-terminal-card__content">
+              <div className="new-terminal-card__header">
+                <span className="new-terminal-card__name">Docker Container</span>
+                <div className="flex gap-2">
+                  <span className="badge badge--accent">Recomendado</span>
+                  {isDockerAvailable && <span className="badge badge--success">Isolado</span>}
+                </div>
               </div>
-            )}
-          </button>
+              <p className="new-terminal-card__desc">
+                Ambiente sandbox Linux totalmente isolado. Ideal para rodar códigos de terceiros com segurança total.
+              </p>
+              
+              <div className="new-terminal-card__features">
+                <div className="new-terminal-card__feature">
+                  <Shield size={12} />
+                  <span>Acesso Root</span>
+                </div>
+                <div className="new-terminal-card__feature">
+                  <Users size={12} />
+                  <span>Colaboração Full</span>
+                </div>
+              </div>
+
+              {!isDockerAvailable && (
+                <div className="new-terminal-card__warning">
+                  <AlertTriangle size={14} />
+                  <div className="new-terminal-card__warning-text">
+                    Docker não detectado. 
+                    <a 
+                      href="https://www.docker.com/products/docker-desktop/" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Instalar
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Option: Local */}
-          <button 
-            className="new-terminal-option"
+          <div 
+            className="new-terminal-card"
             onClick={() => handleSelect(false)}
-            title="Terminal direto no seu macOS"
           >
-            <div className="new-terminal-option__header">
-              <Laptop size={20} className="text-info" />
-              <span>Local Terminal</span>
-              <span className="new-terminal-option__badge new-terminal-option__badge--local">Live Share</span>
+            <div className="new-terminal-card__icon-wrapper new-terminal-card__icon-wrapper--local">
+              <Laptop size={24} />
             </div>
-            <p className="new-terminal-option__desc">
-              Roda direto no seu macOS. Guests entram como Read-Only por segurança.
-            </p>
-          </button>
+            <div className="new-terminal-card__content">
+              <div className="new-terminal-card__header">
+                <span className="new-terminal-card__name">Terminal Local</span>
+                <span className="badge badge--info">Performance</span>
+              </div>
+              <p className="new-terminal-card__desc">
+                Roda nativamente no seu macOS. Acesso direto aos seus arquivos e ferramentas locais.
+              </p>
+              
+              <div className="new-terminal-card__features">
+                <div className="new-terminal-card__feature">
+                  <Shield size={12} />
+                  <span>Read-Only p/ Convidados</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {errorMessage && (
-          <p className="new-terminal-dialog__error">
-            {errorMessage}
-          </p>
+          <div className="new-terminal-dialog__error-box">
+            <AlertTriangle size={16} />
+            <span>{errorMessage}</span>
+          </div>
         )}
+
+        <div className="new-terminal-dialog__footer">
+          <button className="btn btn--ghost" onClick={() => setIsOpen(false)}>
+            Cancelar
+          </button>
+        </div>
       </div>
     </div>
   )

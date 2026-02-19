@@ -9,6 +9,7 @@ import (
 // PTYConfig configura a criação de um novo terminal
 type PTYConfig struct {
 	Shell       string   `json:"shell"`       // "/bin/zsh" ou "/bin/bash"
+	Args        []string `json:"args"`        // Argumentos opcionais do processo principal
 	Cwd         string   `json:"cwd"`         // Diretório de trabalho
 	Env         []string `json:"env"`         // Variáveis de ambiente extras
 	Cols        uint16   `json:"cols"`        // Colunas (default: 80)

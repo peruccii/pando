@@ -35,7 +35,9 @@
 }
 
 .terminal-pane .xterm-viewport {
-  overflow-y: auto !important;
+  /* xterm depende de viewport sempre scrollable; auto pode travar wheel em CLIs interativas. */
+  overflow-y: scroll !important;
+  overscroll-behavior: contain;
 }
 
 .terminal-pane .xterm-viewport::-webkit-scrollbar {

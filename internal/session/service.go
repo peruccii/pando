@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const guestApprovalTimeout = 5 * time.Minute
+
 // Service implementa ISessionService
 type Service struct {
 	sessions  map[string]*Session // sessionID → Session
@@ -31,6 +33,48 @@ func NewService(emitEvent func(eventName string, data interface{})) *Service {
 	go s.cleanupLoop()
 
 	return s
+}
+
+func guestApprovalExpiresAt(joinedAt time.Time) time.Time {
+	return joinedAt.Add(guestApprovalTimeout)
+}
+
+func buildJoinResult(session *Session, guest SessionGuest) *JoinResult {
+	result := &JoinResult{
+		SessionID:   session.ID,
+		SessionCode: session.Code,
+		HostName:    session.HostName,
+		Status:      string(guest.Status),
+		GuestUserID: guest.UserID,
+	}
+	if guest.Status == GuestPending {
+		result.ApprovalExpiresAt = guestApprovalExpiresAt(guest.JoinedAt)
+	}
+	return result
+}
+
+func (s *Service) emitGuestExpired(sessionID, guestUserID string) {
+	if s.emitEvent == nil {
+		return
+	}
+	s.emitEvent("session:guest_expired", map[string]interface{}{
+		"sessionID":   sessionID,
+		"guestUserID": guestUserID,
+	})
+}
+
+func (s *Service) expirePendingGuestsLocked(session *Session, now time.Time) {
+	for i := range session.Guests {
+		if session.Guests[i].Status != GuestPending {
+			continue
+		}
+		if now.Before(guestApprovalExpiresAt(session.Guests[i].JoinedAt)) {
+			continue
+		}
+		session.Guests[i].Status = GuestExpired
+		log.Printf("[SESSION] Guest %s request expired in session %s", session.Guests[i].UserID, session.Code)
+		s.emitGuestExpired(session.ID, session.Guests[i].UserID)
+	}
 }
 
 // CreateSession cria uma nova sessão de colaboração
@@ -108,6 +152,7 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now()
 	normalized := normalizeCode(code)
 
 	if !validateCodeFormat(normalized) {
@@ -125,7 +170,7 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 	}
 
 	// Verificar se o código expirou
-	if time.Now().After(session.ExpiresAt) {
+	if now.After(session.ExpiresAt) {
 		return nil, fmt.Errorf("session code has expired")
 	}
 
@@ -134,17 +179,21 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 		return nil, fmt.Errorf("session has ended")
 	}
 
+	// Expirar pedidos pendentes com mais de 5 minutos.
+	s.expirePendingGuestsLocked(session, now)
+
 	// Verificar se o guest já está na sessão
-	for _, g := range session.Guests {
+	existingGuestIndex := -1
+	for i, g := range session.Guests {
 		if g.UserID == guestUserID {
+			existingGuestIndex = i
 			if g.Status == GuestRejected {
 				return nil, fmt.Errorf("you were rejected from this session")
 			}
-			return &JoinResult{
-				SessionID: session.ID,
-				HostName:  session.HostName,
-				Status:    string(g.Status),
-			}, nil
+			if g.Status != GuestExpired {
+				return buildJoinResult(session, g), nil
+			}
+			break
 		}
 	}
 
@@ -159,18 +208,23 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 		return nil, fmt.Errorf("session is full (max %d guests)", session.Config.MaxGuests)
 	}
 
-	// Adicionar guest como pendente
+	joinedAt := time.Now()
 	guest := SessionGuest{
 		UserID:     guestUserID,
 		Name:       guestInfo.Name,
 		AvatarURL:  guestInfo.AvatarURL,
 		Permission: session.Config.DefaultPerm,
-		JoinedAt:   time.Now(),
+		JoinedAt:   joinedAt,
 		Status:     GuestPending,
 	}
-	session.Guests = append(session.Guests, guest)
 
-	log.Printf("[SESSION] Guest %s (%s) requesting to join session %s", guestUserID, guestInfo.Name, session.Code)
+	if existingGuestIndex >= 0 {
+		session.Guests[existingGuestIndex] = guest
+		log.Printf("[SESSION] Guest %s (%s) renewed join request for session %s", guestUserID, guestInfo.Name, session.Code)
+	} else {
+		session.Guests = append(session.Guests, guest)
+		log.Printf("[SESSION] Guest %s (%s) requesting to join session %s", guestUserID, guestInfo.Name, session.Code)
+	}
 
 	// Notificar o host que um guest quer entrar
 	if s.emitEvent != nil {
@@ -179,15 +233,11 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 			Name:      guestInfo.Name,
 			Email:     guestInfo.Email,
 			AvatarURL: guestInfo.AvatarURL,
-			RequestAt: time.Now(),
+			RequestAt: joinedAt,
 		})
 	}
 
-	return &JoinResult{
-		SessionID: session.ID,
-		HostName:  session.HostName,
-		Status:    string(GuestPending),
-	}, nil
+	return buildJoinResult(session, guest), nil
 }
 
 // ApproveGuest aprova um guest para entrar na sessão
@@ -200,8 +250,23 @@ func (s *Service) ApproveGuest(sessionID, guestUserID string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
+	s.expirePendingGuestsLocked(session, time.Now())
+
 	for i, g := range session.Guests {
 		if g.UserID == guestUserID {
+			switch g.Status {
+			case GuestExpired:
+				return fmt.Errorf("guest request approval window expired")
+			case GuestRejected:
+				return fmt.Errorf("guest request was rejected")
+			case GuestApproved, GuestConnected:
+				return nil
+			case GuestPending:
+				// segue para aprovação.
+			default:
+				return fmt.Errorf("guest cannot be approved from status: %s", g.Status)
+			}
+
 			session.Guests[i].Status = GuestApproved
 			log.Printf("[SESSION] Guest %s approved in session %s", guestUserID, session.Code)
 
@@ -237,6 +302,8 @@ func (s *Service) RejectGuest(sessionID, guestUserID string) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
+
+	s.expirePendingGuestsLocked(session, time.Now())
 
 	for i, g := range session.Guests {
 		if g.UserID == guestUserID {
@@ -288,21 +355,56 @@ func (s *Service) EndSession(sessionID string) error {
 
 // GetSession retorna detalhes de uma sessão
 func (s *Service) GetSession(sessionID string) (*Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	session, ok := s.sessions[sessionID]
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
+	s.expirePendingGuestsLocked(session, time.Now())
+
 	return session, nil
+}
+
+// RestoreSession restaura uma sessão previamente persistida no estado em memória.
+func (s *Service) RestoreSession(restored *Session) error {
+	if restored == nil {
+		return fmt.Errorf("restored session is nil")
+	}
+	if restored.ID == "" {
+		return fmt.Errorf("restored session has empty id")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sessions[restored.ID] = restored
+
+	// Limpar índices antigos apontando para esta sessão.
+	for code, sessionID := range s.codeIndex {
+		if sessionID == restored.ID {
+			delete(s.codeIndex, code)
+		}
+	}
+
+	if restored.Status != StatusEnded && restored.HostUserID != "" {
+		s.hostIndex[restored.HostUserID] = restored.ID
+	}
+
+	// Código só deve voltar a ser aceito se ainda estiver em waiting e não expirado.
+	if restored.Status == StatusWaiting && restored.Code != "" && time.Now().Before(restored.ExpiresAt) {
+		s.codeIndex[normalizeCode(restored.Code)] = restored.ID
+	}
+
+	return nil
 }
 
 // GetActiveSession retorna a sessão ativa de um usuário (host)
 func (s *Service) GetActiveSession(userID string) (*Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	sessionID, ok := s.hostIndex[userID]
 	if !ok {
@@ -314,18 +416,22 @@ func (s *Service) GetActiveSession(userID string) (*Session, error) {
 		return nil, fmt.Errorf("no active session for user: %s", userID)
 	}
 
+	s.expirePendingGuestsLocked(session, time.Now())
+
 	return session, nil
 }
 
 // ListPendingGuests lista pedidos de entrada pendentes
 func (s *Service) ListPendingGuests(sessionID string) ([]GuestRequest, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	session, ok := s.sessions[sessionID]
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
+
+	s.expirePendingGuestsLocked(session, time.Now())
 
 	var pending []GuestRequest
 	for _, g := range session.Guests {
@@ -423,12 +529,15 @@ func (s *Service) cleanupLoop() {
 		s.mu.Lock()
 		now := time.Now()
 		for id, session := range s.sessions {
+			s.expirePendingGuestsLocked(session, now)
+
 			// Limpar sessões com código expirado que nunca se tornaram ativas
 			if session.Status == StatusWaiting && now.After(session.ExpiresAt) {
 				log.Printf("[SESSION] Cleaning up expired session %s (code: %s)", id, session.Code)
 				delete(s.codeIndex, normalizeCode(session.Code))
 				delete(s.hostIndex, session.HostUserID)
 				delete(s.sessions, id)
+				continue
 			}
 			// Limpar sessões encerradas há mais de 1 hora
 			if session.Status == StatusEnded && now.After(session.CreatedAt.Add(1*time.Hour)) {

@@ -54,6 +54,10 @@ export function CreateTerminalForAgent(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['CreateTerminalForAgent'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function CreateTerminalForAgentResume(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['CreateTerminalForAgentResume'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
 export function CreateWorkspace(arg1) {
   return window['go']['main']['App']['CreateWorkspace'](arg1);
 }
@@ -164,6 +168,10 @@ export function GetAuthState() {
 
 export function GetAvailableShells() {
   return window['go']['main']['App']['GetAvailableShells']();
+}
+
+export function GetAvailableTerminalFonts() {
+  return window['go']['main']['App']['GetAvailableTerminalFonts']();
 }
 
 export function GetCurrentBranch(arg1) {
@@ -284,6 +292,14 @@ export function SaveLayoutState(arg1) {
 
 export function SaveShortcutBindings(arg1) {
   return window['go']['main']['App']['SaveShortcutBindings'](arg1);
+}
+
+export function SaveTerminalCursorStyle(arg1) {
+  return window['go']['main']['App']['SaveTerminalCursorStyle'](arg1);
+}
+
+export function SaveTerminalFontFamily(arg1) {
+  return window['go']['main']['App']['SaveTerminalFontFamily'](arg1);
 }
 
 export function SaveTerminalFontSize(arg1) {

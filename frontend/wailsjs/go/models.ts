@@ -990,6 +990,8 @@ export namespace main {
 	    language: string;
 	    defaultShell: string;
 	    terminalFontSize: number;
+	    terminalFontFamily: string;
+	    terminalCursorStyle: string;
 	    onboardingCompleted: boolean;
 	    shortcutBindings?: string;
 	    version: string;
@@ -1007,6 +1009,8 @@ export namespace main {
 	        this.language = source["language"];
 	        this.defaultShell = source["defaultShell"];
 	        this.terminalFontSize = source["terminalFontSize"];
+	        this.terminalFontFamily = source["terminalFontFamily"];
+	        this.terminalCursorStyle = source["terminalCursorStyle"];
 	        this.onboardingCompleted = source["onboardingCompleted"];
 	        this.shortcutBindings = source["shortcutBindings"];
 	        this.version = source["version"];
@@ -1139,8 +1143,12 @@ export namespace session {
 	}
 	export class JoinResult {
 	    sessionID: string;
+	    sessionCode: string;
 	    hostName: string;
 	    status: string;
+	    guestUserID: string;
+	    // Go type: time
+	    approvalExpiresAt?: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new JoinResult(source);
@@ -1149,9 +1157,30 @@ export namespace session {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessionID = source["sessionID"];
+	        this.sessionCode = source["sessionCode"];
 	        this.hostName = source["hostName"];
 	        this.status = source["status"];
+	        this.guestUserID = source["guestUserID"];
+	        this.approvalExpiresAt = this.convertValues(source["approvalExpiresAt"], null);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SessionConfig {
 	    maxGuests: number;

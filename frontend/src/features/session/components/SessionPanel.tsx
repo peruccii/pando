@@ -1,4 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  Users,
+  Play,
+  ScrollText,
+  RefreshCw,
+  X,
+  Copy,
+  User,
+  Check,
+  Shield,
+  Eye,
+  Trash2,
+  AlertCircle
+} from 'lucide-react'
 import { useSession } from '../hooks/useSession'
 import './SessionPanel.css'
 
@@ -20,7 +34,10 @@ export function SessionPanel() {
     isLoading,
     error,
     isSessionActive,
+    isWaitingApproval,
+    wasRestoredSession,
     isP2PConnected,
+    joinResult,
     auditLogs,
     isAuditLoading,
     createSession,
@@ -52,6 +69,12 @@ export function SessionPanel() {
   const canRestartEnv = useMemo(() => {
     return role === 'host' && session?.mode === 'docker'
   }, [role, session?.mode])
+
+  const headerTitle = useMemo(() => {
+    if (role === 'host') return 'Hosting Session'
+    if (isWaitingApproval) return 'Waiting Approval'
+    return 'Connected'
+  }, [isWaitingApproval, role])
 
   const handleCreate = async () => {
     try {
@@ -97,7 +120,9 @@ export function SessionPanel() {
   if (!isSessionActive && role !== 'guest') {
     return (
       <div className="session-panel session-panel--empty">
-        <div className="session-panel__icon">🤝</div>
+        <div className="session-panel__icon">
+          <Users size={32} />
+        </div>
         <h3 className="session-panel__title">Collaboration Session</h3>
         <p className="session-panel__subtitle">
           Start a session to collaborate in real-time with other developers
@@ -109,7 +134,7 @@ export function SessionPanel() {
             onClick={() => setShowCreateDialog(true)}
             aria-label="Start collaboration session (Cmd+Shift+S)"
           >
-            <span className="session-panel__btn-icon">🚀</span>
+            <Play size={14} fill="currentColor" />
             Start Session
           </button>
         ) : (
@@ -186,7 +211,7 @@ export function SessionPanel() {
         <div className="session-panel__header-left">
           <span className={`status-dot ${isP2PConnected ? 'status-dot--idle' : 'status-dot--running'}`} />
           <h3 className="session-panel__title">
-            {role === 'host' ? 'Hosting Session' : 'Connected'}
+            {headerTitle}
           </h3>
         </div>
         {role === 'host' && (
@@ -197,7 +222,7 @@ export function SessionPanel() {
               title="Show audit logs"
               aria-label="Show audit logs"
             >
-              📜
+              <ScrollText size={16} />
             </button>
             {canRestartEnv && (
               <button
@@ -206,7 +231,7 @@ export function SessionPanel() {
                 title="Restart Docker environment"
                 aria-label="Restart Docker environment"
               >
-                ♻️
+                <RefreshCw size={16} />
               </button>
             )}
             <button
@@ -215,22 +240,47 @@ export function SessionPanel() {
               title="End Session"
               aria-label="End collaboration session"
             >
-              ✕
+              <X size={16} />
             </button>
           </div>
         )}
       </div>
 
+      {role === 'host' && session && wasRestoredSession && (
+        <div className="session-panel__restore-banner animate-fade-in-up">
+          <div className="session-panel__restore-copy">
+            <span className="session-panel__restore-badge">Sessão restaurada</span>
+            <p className="session-panel__restore-text">
+              Esta sessão foi recuperada após reiniciar o app.
+            </p>
+          </div>
+          <button className="btn btn--danger btn--sm" onClick={endSession}>
+            Encerrar sessão anterior
+          </button>
+        </div>
+      )}
+
       {/* Código de convite */}
-      {session && session.status === 'waiting' && (
+      {session && role === 'host' && session.status === 'waiting' && (
         <div className="session-panel__code-section animate-fade-in-up">
           <p className="session-panel__code-label">Share this code with your collaborators:</p>
           <div className="session-panel__code-display" onClick={handleCopyCode} title="Click to copy">
             <span className="session-panel__code">{session.code}</span>
-            <span className="session-panel__code-copy">📋</span>
+            <Copy size={16} className="session-panel__code-copy" />
           </div>
           <p className="session-panel__code-expiry">
             Expires in {Math.max(0, Math.ceil((new Date(session.expiresAt).getTime() - Date.now()) / 60000))} min
+          </p>
+        </div>
+      )}
+
+      {role === 'guest' && isWaitingApproval && (
+        <div className="session-panel__audit animate-fade-in-up">
+          <p className="session-panel__audit-empty">
+            Waiting for host approval{joinResult?.hostName ? ` from ${joinResult.hostName}` : ''}.
+          </p>
+          <p className="session-panel__audit-empty">
+            Keep this window open until the host accepts your request.
           </p>
         </div>
       )}
@@ -239,7 +289,7 @@ export function SessionPanel() {
       {pendingGuests.length > 0 && role === 'host' && (
         <div className="session-panel__waiting-room animate-fade-in-up">
           <h4 className="session-panel__section-title">
-            🔔 Pending Requests ({pendingGuests.length})
+            Pending Requests ({pendingGuests.length})
           </h4>
           {pendingGuests.map((guest) => (
             <div key={guest.userID} className="session-panel__guest-request animate-fade-in-up">
@@ -252,7 +302,7 @@ export function SessionPanel() {
                   />
                 ) : (
                   <div className="session-panel__guest-avatar session-panel__guest-avatar--placeholder">
-                    👤
+                    <User size={14} />
                   </div>
                 )}
                 <div className="session-panel__guest-details">
@@ -268,14 +318,14 @@ export function SessionPanel() {
                   onClick={() => approveGuest(guest.userID)}
                   aria-label={`Approve ${guest.name}`}
                 >
-                  ✅ Approve
+                  <Check size={14} /> Approve
                 </button>
                 <button
                   className="btn btn--danger btn--sm"
                   onClick={() => rejectGuest(guest.userID)}
                   aria-label={`Reject ${guest.name}`}
                 >
-                  ❌ Reject
+                  <X size={14} /> Reject
                 </button>
               </div>
             </div>
@@ -302,13 +352,17 @@ export function SessionPanel() {
                     />
                   ) : (
                     <div className="session-panel__guest-avatar session-panel__guest-avatar--placeholder">
-                      👤
+                      <User size={14} />
                     </div>
                   )}
                   <div className="session-panel__guest-details">
                     <span className="session-panel__guest-name">{guest.name}</span>
                     <span className={`badge badge--${guest.permission === 'read_write' ? 'warning' : 'info'}`}>
-                      {guest.permission === 'read_write' ? '✏️ Read/Write' : '👁️ Read Only'}
+                      {guest.permission === 'read_write' ? (
+                        <><Shield size={10} style={{ marginRight: 4 }} /> Read/Write</>
+                      ) : (
+                        <><Eye size={10} style={{ marginRight: 4 }} /> Read Only</>
+                      )}
                     </span>
                   </div>
                 </div>
@@ -319,14 +373,14 @@ export function SessionPanel() {
                       onClick={() => handleTogglePermission(guest.userID, guest.name, guest.permission)}
                       title={`Toggle permission for ${guest.name}`}
                     >
-                      🔄
+                      <RefreshCw size={14} />
                     </button>
                     <button
                       className="btn btn--ghost btn--icon"
                       onClick={() => kickGuest(guest.userID)}
                       title={`Kick ${guest.name}`}
                     >
-                      🚫
+                      <Trash2 size={14} />
                     </button>
                   </div>
                 )}
@@ -340,7 +394,7 @@ export function SessionPanel() {
           <div className="session-panel__audit-header">
             <h4 className="session-panel__section-title">Audit Logs</h4>
             <button className="btn btn--ghost btn--sm" onClick={() => loadAuditLogs()}>
-              Refresh
+              <RefreshCw size={12} style={{ marginRight: 4 }} /> Refresh
             </button>
           </div>
           {isAuditLoading ? (
@@ -371,7 +425,10 @@ export function SessionPanel() {
       {permissionPrompt && (
         <div className="session-panel__modal-overlay" role="presentation" onClick={() => setPermissionPrompt(null)}>
           <div className="session-panel__modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-            <h4>Security Confirmation</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <AlertCircle size={24} className="text-danger" />
+              <h4 style={{ margin: 0 }}>Security Confirmation</h4>
+            </div>
             <p>
               Granting <strong>Read/Write</strong> lets <strong>{permissionPrompt.guestName}</strong> execute commands on your environment.
             </p>

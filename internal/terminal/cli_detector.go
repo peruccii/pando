@@ -3,6 +3,7 @@ package terminal
 import (
 	"log"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -51,16 +52,14 @@ func DetectCLI(pid int) CLIType {
 	for _, childPID := range childPIDs {
 		// Obter nome do processo
 		procName := getProcessName(childPID)
-		if procName == "" {
-			continue
+		if cliType := detectCLIFromText(procName); cliType != CLINone {
+			log.Printf("[CLI-Detector] Found %s (PID %d) as child of PID %d", cliType, childPID, pid)
+			return cliType
 		}
 
-		// Normalizar: pegar apenas o basename (sem path)
-		parts := strings.Split(procName, "/")
-		baseName := strings.ToLower(parts[len(parts)-1])
-
-		if cliType, ok := knownCLIBinaries[baseName]; ok {
-			log.Printf("[CLI-Detector] Found %s (PID %d) as child of PID %d", cliType, childPID, pid)
+		// Fallback para CLIs baseadas em Node/wrappers: verificar a linha de comando completa.
+		if cliType := detectCLIFromText(getProcessCommandLine(childPID)); cliType != CLINone {
+			log.Printf("[CLI-Detector] Found %s via command line (PID %d) as child of PID %d", cliType, childPID, pid)
 			return cliType
 		}
 
@@ -106,6 +105,40 @@ func getProcessName(pid int) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func getProcessCommandLine(pid int) string {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func detectCLIFromText(raw string) CLIType {
+	text := strings.TrimSpace(strings.ToLower(raw))
+	if text == "" {
+		return CLINone
+	}
+
+	for _, token := range strings.Fields(text) {
+		clean := strings.TrimSpace(token)
+		if clean == "" {
+			continue
+		}
+
+		base := strings.ToLower(filepath.Base(clean))
+		base = strings.Trim(base, "\"'`")
+		base = strings.TrimSuffix(base, ".js")
+		base = strings.TrimSuffix(base, ".mjs")
+		base = strings.TrimSuffix(base, ".cjs")
+
+		if cliType, ok := knownCLIBinaries[base]; ok {
+			return cliType
+		}
+	}
+
+	return CLINone
 }
 
 // GetProcessCwd retorna o diretório de trabalho atual de um processo (macOS via lsof).

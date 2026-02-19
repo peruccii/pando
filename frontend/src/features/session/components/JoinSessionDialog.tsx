@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { X, Loader2 } from 'lucide-react'
 import { useSession } from '../hooks/useSession'
 import './JoinSessionDialog.css'
 
@@ -15,6 +16,34 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
 
   const [code, setCode] = useState('')
   const [name, setName] = useState('')
+  const [remainingSeconds, setRemainingSeconds] = useState(5 * 60)
+
+  const waitingCode = useMemo(() => {
+    return joinResult?.sessionCode || code
+  }, [code, joinResult?.sessionCode])
+
+  useEffect(() => {
+    if (!isWaitingApproval) {
+      setRemainingSeconds(5 * 60)
+      return
+    }
+
+    const deadline = Date.parse(joinResult?.approvalExpiresAt || '')
+    const fallbackDeadline = Date.now() + 5 * 60 * 1000
+    const target = Number.isNaN(deadline) ? fallbackDeadline : deadline
+
+    const tick = () => {
+      const seconds = Math.max(0, Math.ceil((target - Date.now()) / 1000))
+      setRemainingSeconds(seconds)
+    }
+
+    tick()
+    const timer = window.setInterval(tick, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isWaitingApproval, joinResult?.approvalExpiresAt])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -27,12 +56,21 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
     }
   }
 
-  const handleClose = () => {
-    if (isWaitingApproval) {
-      cancelJoin()
-    }
+  const resetForm = () => {
     setCode('')
     setName('')
+  }
+
+  const handleDismiss = () => {
+    if (!isWaitingApproval) {
+      resetForm()
+    }
+    onClose()
+  }
+
+  const handleCancelWaiting = () => {
+    cancelJoin()
+    resetForm()
     onClose()
   }
 
@@ -52,28 +90,34 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
   if (!isOpen) return null
 
   return (
-    <div className="join-dialog__overlay" onClick={handleClose}>
+    <div className="join-dialog__overlay" onClick={handleDismiss}>
       <div className="join-dialog animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="join-dialog__header">
           <h2 className="join-dialog__title">Join Session</h2>
-          <button className="btn btn--ghost btn--icon" onClick={handleClose} aria-label="Close dialog">
-            ✕
+          <button className="btn btn--ghost btn--icon" onClick={handleDismiss} aria-label="Close dialog">
+            <X size={18} />
           </button>
         </div>
 
         {/* Aguardando aprovação */}
         {isWaitingApproval && joinResult ? (
           <div className="join-dialog__waiting animate-fade-in">
-            <div className="join-dialog__waiting-spinner" />
+            <Loader2 className="join-dialog__waiting-spinner" size={32} />
             <h3 className="join-dialog__waiting-title">Waiting for approval...</h3>
             <p className="join-dialog__waiting-text">
-              Session: <strong>{code}</strong>
+              Session: <strong>{waitingCode}</strong>
             </p>
             <p className="join-dialog__waiting-text">
               Host: <strong>{joinResult.hostName}</strong>
             </p>
-            <button className="btn btn--ghost" onClick={handleClose}>
+            <p className="join-dialog__waiting-deadline">
+              Time remaining: <strong>{Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, '0')}</strong>
+            </p>
+            <p className="join-dialog__waiting-hint">
+              You can close this window. The request keeps running in background.
+            </p>
+            <button className="btn btn--ghost" onClick={handleCancelWaiting}>
               Cancel
             </button>
           </div>
@@ -119,7 +163,7 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
             {error && <div className="join-dialog__error">{error}</div>}
 
             <div className="join-dialog__actions">
-              <button type="button" className="btn btn--ghost" onClick={handleClose}>
+              <button type="button" className="btn btn--ghost" onClick={handleDismiss}>
                 Cancel
               </button>
               <button

@@ -13,6 +13,8 @@ type UserConfig struct {
 	AIAPIKey            string    `json:"-"` // Criptografado com AES-256
 	DefaultShell        string    `json:"defaultShell"`
 	FontSize            int       `gorm:"default:14" json:"fontSize"`
+	FontFamily          string    `gorm:"default:JetBrains Mono" json:"fontFamily"`
+	CursorStyle         string    `gorm:"default:line" json:"cursorStyle"`
 	ShortcutBindings    string    `gorm:"type:text" json:"shortcutBindings,omitempty"` // JSON de atalhos customizados
 	LayoutState         string    `gorm:"type:text" json:"layoutState,omitempty"`      // Serialized Command Center layout
 	CreatedAt           time.Time `json:"createdAt"`
@@ -81,6 +83,20 @@ type SessionHistory struct {
 	StartedAt   time.Time  `json:"startedAt"`
 	EndedAt     *time.Time `json:"endedAt,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
+}
+
+// CollabSessionState persiste o snapshot de uma sessão ativa para restore após restart.
+type CollabSessionState struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	SessionID    string    `gorm:"uniqueIndex;not null" json:"sessionID"`
+	HostUserID   string    `gorm:"index;not null" json:"hostUserID"`
+	Code         string    `gorm:"index;not null" json:"code"`
+	Status       string    `gorm:"index;not null" json:"status"`
+	ExpiresAt    time.Time `gorm:"index" json:"expiresAt"`
+	PersistUntil time.Time `gorm:"index;not null" json:"persistUntil"`
+	Payload      string    `gorm:"type:text;not null" json:"payload"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // AuditLog armazena eventos de auditoria por sessão.

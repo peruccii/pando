@@ -10,9 +10,12 @@ import {
 
 export type Theme = 'dark' | 'light' | 'hacker' | 'nvim' | 'min-dark'
 export type Language = 'pt-BR' | 'en-US'
+export type TerminalCursorStyle = 'line' | 'block' | 'underline'
 export const DEFAULT_TERMINAL_FONT_SIZE = 14
 export const MIN_TERMINAL_FONT_SIZE = 10
 export const MAX_TERMINAL_FONT_SIZE = 24
+export const DEFAULT_TERMINAL_FONT_FAMILY = 'JetBrains Mono'
+export const DEFAULT_TERMINAL_CURSOR_STYLE: TerminalCursorStyle = 'line'
 
 export interface Workspace {
   id: number
@@ -36,6 +39,8 @@ export interface AppState {
   language: Language
   defaultShell: string
   terminalFontSize: number
+  terminalFontFamily: string
+  terminalCursorStyle: TerminalCursorStyle
   onboardingCompleted: boolean
   shortcutBindings: ShortcutBindingOverrides
 
@@ -53,6 +58,8 @@ interface AppActions {
   setLanguage: (language: Language) => void
   setDefaultShell: (shell: string) => void
   setTerminalFontSize: (size: number) => void
+  setTerminalFontFamily: (family: string) => void
+  setTerminalCursorStyle: (style: TerminalCursorStyle) => void
   zoomInTerminal: () => void
   zoomOutTerminal: () => void
   resetTerminalZoom: () => void
@@ -78,6 +85,8 @@ export interface HydrationPayload {
   language?: string
   defaultShell?: string
   terminalFontSize?: number
+  terminalFontFamily?: string
+  terminalCursorStyle?: string
   onboardingCompleted?: boolean
   shortcutBindings?: string
   version: string
@@ -109,6 +118,18 @@ const normalizeTerminalFontSize = (size: number | undefined): number => {
   return rounded
 }
 
+const normalizeTerminalFontFamily = (family: string | undefined): string => {
+  const normalized = (family || '').trim()
+  return normalized.length > 0 ? normalized : DEFAULT_TERMINAL_FONT_FAMILY
+}
+
+const normalizeTerminalCursorStyle = (style: string | undefined): TerminalCursorStyle => {
+  const normalized = (style || '').trim().toLowerCase()
+  if (normalized === 'block') return 'block'
+  if (normalized === 'underline') return 'underline'
+  return DEFAULT_TERMINAL_CURSOR_STYLE
+}
+
 export const useAppStore = create<AppState & AppActions>((set, get) => ({
   // State
   version: '1.0.0',
@@ -117,6 +138,8 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
   language: 'pt-BR',
   defaultShell: '',
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
+  terminalFontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+  terminalCursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
   onboardingCompleted: false,
   shortcutBindings: {},
   workspaces: [],
@@ -172,6 +195,36 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
     const appBindings = window.go?.main?.App as { SaveTerminalFontSize?: (value: number) => Promise<void> } | undefined
     appBindings?.SaveTerminalFontSize?.(next).catch((err: unknown) => {
       console.warn('[AppStore] Failed to persist terminal font size:', err)
+    })
+  },
+
+  setTerminalFontFamily: (family) => {
+    const next = normalizeTerminalFontFamily(family)
+    const current = get().terminalFontFamily
+    if (current === next) {
+      return
+    }
+
+    set({ terminalFontFamily: next })
+
+    const appBindings = window.go?.main?.App as { SaveTerminalFontFamily?: (value: string) => Promise<void> } | undefined
+    appBindings?.SaveTerminalFontFamily?.(next).catch((err: unknown) => {
+      console.warn('[AppStore] Failed to persist terminal font family:', err)
+    })
+  },
+
+  setTerminalCursorStyle: (style) => {
+    const next = normalizeTerminalCursorStyle(style)
+    const current = get().terminalCursorStyle
+    if (current === next) {
+      return
+    }
+
+    set({ terminalCursorStyle: next })
+
+    const appBindings = window.go?.main?.App as { SaveTerminalCursorStyle?: (value: TerminalCursorStyle) => Promise<void> } | undefined
+    appBindings?.SaveTerminalCursorStyle?.(next).catch((err: unknown) => {
+      console.warn('[AppStore] Failed to persist terminal cursor style:', err)
     })
   },
 
@@ -244,6 +297,8 @@ export const useAppStore = create<AppState & AppActions>((set, get) => ({
       language,
       defaultShell: payload.defaultShell || '',
       terminalFontSize: normalizeTerminalFontSize(payload.terminalFontSize),
+      terminalFontFamily: normalizeTerminalFontFamily(payload.terminalFontFamily),
+      terminalCursorStyle: normalizeTerminalCursorStyle(payload.terminalCursorStyle),
       onboardingCompleted: payload.onboardingCompleted ?? false,
       shortcutBindings: parseShortcutBindingsJSON(payload.shortcutBindings),
       workspaces: payload.workspaces || [],

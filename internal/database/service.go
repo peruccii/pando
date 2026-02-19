@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"orch/internal/config"
 
@@ -36,6 +37,7 @@ func NewService() (*Service, error) {
 		&AgentSession{},
 		&ChatHistory{},
 		&SessionHistory{},
+		&CollabSessionState{},
 		&AuditLog{},
 		&TerminalSnapshot{},
 	); err != nil {
@@ -56,6 +58,9 @@ func NewService() (*Service, error) {
 
 func openWritableDatabase() (string, *gorm.DB, error) {
 	candidates := make([]string, 0, 3)
+	if override := strings.TrimSpace(os.Getenv("ORCH_DB_PATH")); override != "" {
+		candidates = append(candidates, override)
+	}
 	candidates = append(candidates, config.DBPath())
 
 	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
@@ -193,6 +198,8 @@ func (s *Service) GetConfig() (*UserConfig, error) {
 				OnboardingCompleted: false,
 				DefaultShell:        "",
 				FontSize:            14,
+				FontFamily:          "JetBrains Mono",
+				CursorStyle:         "line",
 				ShortcutBindings:    "",
 			}
 			s.db.Create(&cfg)
@@ -650,6 +657,67 @@ func (s *Service) ListAuditEvents(sessionID string, limit int) ([]AuditLog, erro
 		Limit(limit).
 		Find(&logs).Error
 	return logs, err
+}
+
+// === CollabSessionState CRUD ===
+
+// UpsertCollabSessionState cria/atualiza o snapshot persistido de uma sessão colaborativa.
+func (s *Service) UpsertCollabSessionState(state *CollabSessionState) error {
+	if state == nil {
+		return fmt.Errorf("collab session state is nil")
+	}
+	if strings.TrimSpace(state.SessionID) == "" {
+		return fmt.Errorf("sessionID is required")
+	}
+
+	var existing CollabSessionState
+	err := s.db.Where("session_id = ?", state.SessionID).First(&existing).Error
+	if err == nil {
+		updates := map[string]interface{}{
+			"host_user_id":  state.HostUserID,
+			"code":          state.Code,
+			"status":        state.Status,
+			"expires_at":    state.ExpiresAt,
+			"persist_until": state.PersistUntil,
+			"payload":       state.Payload,
+		}
+		return s.db.Model(&CollabSessionState{}).Where("session_id = ?", state.SessionID).Updates(updates).Error
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return s.db.Create(state).Error
+}
+
+// DeleteCollabSessionState remove um snapshot persistido por sessionID.
+func (s *Service) DeleteCollabSessionState(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	return s.db.Where("session_id = ?", sessionID).Delete(&CollabSessionState{}).Error
+}
+
+// ListRestorableCollabSessionStates lista sessões ainda válidas para restore.
+func (s *Service) ListRestorableCollabSessionStates(now time.Time, limit int) ([]CollabSessionState, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var states []CollabSessionState
+	err := s.db.
+		Where("persist_until > ?", now).
+		Where("status <> ?", "ended").
+		Order("updated_at DESC, id DESC").
+		Limit(limit).
+		Find(&states).Error
+	return states, err
+}
+
+// CleanupExpiredCollabSessionStates remove snapshots vencidos e/ou finalizados.
+func (s *Service) CleanupExpiredCollabSessionStates(now time.Time) error {
+	return s.db.
+		Where("persist_until <= ? OR status = ?", now, "ended").
+		Delete(&CollabSessionState{}).
+		Error
 }
 
 // === TerminalSnapshot CRUD ===

@@ -235,6 +235,14 @@ export function TabBar() {
         {workspaces.map((workspace) => {
           const isActive = workspace.id === activeWorkspaceId
           const isEditing = workspace.id === editingWorkspaceId
+          const terminalCount = workspace.agents.reduce((count, agent) => {
+            const normalizedType = (agent.type || '').trim().toLowerCase()
+            if (!normalizedType || normalizedType === 'terminal') {
+              return count + 1
+            }
+            return count
+          }, 0)
+          const terminalCountLabel = terminalCount > 99 ? '99+' : `${terminalCount}`
           const tabStyle: CSSProperties = {}
           const workspaceColor = workspace.color?.trim()
           const activeBorderColor = workspaceColor && workspaceColor.length > 0
@@ -295,31 +303,13 @@ export function TabBar() {
               ) : (
                 <>
                   <span className="tabbar__name">{workspace.name}</span>
-                  {canDeleteWorkspace && (
-                    <span
-                      className="tabbar__delete"
-                      role="button"
-                      tabIndex={0}
-                      title="Deletar workspace"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleDeleteWorkspace(workspace.id).catch((err) => {
-                          console.error('[TabBar] Failed to delete workspace:', err)
-                        })
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          handleDeleteWorkspace(workspace.id).catch((err) => {
-                            console.error('[TabBar] Failed to delete workspace:', err)
-                          })
-                        }
-                      }}
-                    >
-                      <X size={12} />
-                    </span>
-                  )}
+                  <span
+                    className={`tabbar__terminal-count ${terminalCount === 0 ? 'tabbar__terminal-count--empty' : ''}`}
+                    aria-label={`${terminalCount} terminais abertos`}
+                    title={`${terminalCount} terminais abertos`}
+                  >
+                    {terminalCountLabel}
+                  </span>
                 </>
               )}
             </div>

@@ -1,4 +1,5 @@
 import { useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useWailsEvents } from './hooks/useWailsEvents'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useStackBuildEvents } from './hooks/useStackBuildEvents'
@@ -18,6 +19,7 @@ import { useLayoutStore } from './features/command-center/stores/layoutStore'
 import { BroadcastBar, useBroadcastStore } from './features/broadcast'
 import { GitActivityPanel, useGitActivity } from './features/git-activity'
 import { useWorkspaceStore } from './stores/workspaceStore'
+import { SessionPanel, JoinSessionDialog } from './features/session'
 
 export function App() {
     useWailsEvents()
@@ -33,6 +35,8 @@ export function App() {
     const loadWorkspaces = useWorkspaceStore((s) => s.loadWorkspaces)
     const { t } = useI18n()
     const isBroadcastActive = useBroadcastStore((s) => s.isActive)
+    const [isSessionPanelOpen, setIsSessionPanelOpen] = useState(false)
+    const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false)
 
     /** Quando o CommandCenter crashar, resetar o layout para estado limpo */
     const handleLayoutError = useCallback(() => {
@@ -64,6 +68,25 @@ export function App() {
                 }
             })
             return () => off()
+        }
+    }, [])
+
+    useEffect(() => {
+        const onToggleSessionPanel = () => setIsSessionPanelOpen((prev) => !prev)
+        const onOpenSessionPanel = () => setIsSessionPanelOpen(true)
+        const onToggleJoin = () => setIsJoinDialogOpen((prev) => !prev)
+        const onOpenJoin = () => setIsJoinDialogOpen(true)
+
+        window.addEventListener('session:panel:toggle', onToggleSessionPanel)
+        window.addEventListener('session:panel:open', onOpenSessionPanel)
+        window.addEventListener('session:join:toggle', onToggleJoin)
+        window.addEventListener('session:join:open', onOpenJoin)
+
+        return () => {
+            window.removeEventListener('session:panel:toggle', onToggleSessionPanel)
+            window.removeEventListener('session:panel:open', onOpenSessionPanel)
+            window.removeEventListener('session:join:toggle', onToggleJoin)
+            window.removeEventListener('session:join:open', onOpenJoin)
         }
     }, [])
 
@@ -104,6 +127,22 @@ export function App() {
 
             {/* Onboarding Wizard (first run) */}
             <OnboardingWizard isOpen={!onboardingCompleted} />
+
+            {isSessionPanelOpen && (
+                <div className="app-session-overlay" onClick={() => setIsSessionPanelOpen(false)}>
+                    <aside
+                        className="app-session-overlay__panel animate-fade-in-up"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <SessionPanel />
+                    </aside>
+                </div>
+            )}
+
+            <JoinSessionDialog
+                isOpen={isJoinDialogOpen}
+                onClose={() => setIsJoinDialogOpen(false)}
+            />
         </div>
     )
 }

@@ -1,3 +1,4 @@
+import { Zap, Terminal, Bot, Github } from 'lucide-react'
 import { useLayout } from '../features/command-center'
 import { useI18n } from '../hooks/useI18n'
 import { getShortcutLabel } from '../hooks/useKeyboardShortcuts'
@@ -20,7 +21,7 @@ export function EmptyState({ version }: EmptyStateProps) {
     <div className="empty-state animate-fade-in" id="empty-state">
       <div className="empty-state__content">
         <div className="empty-state__logo">
-          <span className="empty-state__logo-icon">⚡</span>
+          <Zap size={32} className="empty-state__logo-icon" fill="currentColor" />
         </div>
         <h1 className="empty-state__title">ORCH</h1>
         <p className="empty-state__subtitle">
@@ -34,7 +35,7 @@ export function EmptyState({ version }: EmptyStateProps) {
             aria-label={`Criar novo terminal (${newTerminalShortcut})`}
             onClick={() => newTerminal()}
           >
-            <span>⌘</span>
+            <Terminal size={14} style={{ marginRight: 8 }} />
             {t('emptyState.newTerminal')}
           </button>
           <button
@@ -43,7 +44,8 @@ export function EmptyState({ version }: EmptyStateProps) {
             aria-label="Novo AI Agent"
             onClick={() => newAIAgent()}
           >
-            🤖 {t('emptyState.newAIAgent')}
+            <Bot size={14} style={{ marginRight: 8 }} />
+            {t('emptyState.newAIAgent')}
           </button>
           <button
             className="btn btn--ghost empty-state__btn"
@@ -51,7 +53,8 @@ export function EmptyState({ version }: EmptyStateProps) {
             aria-label="Novo painel GitHub"
             onClick={() => newGitHub()}
           >
-            🐙 {t('emptyState.newGitHub')}
+            <Github size={14} style={{ marginRight: 8 }} />
+            {t('emptyState.newGitHub')}
           </button>
         </div>
 

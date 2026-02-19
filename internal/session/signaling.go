@@ -213,31 +213,57 @@ func (s *SignalingService) handleMessage(sessionID, userID string, isHost bool, 
 // registerConnection registra uma conexão WebSocket
 func (s *SignalingService) registerConnection(sessionID string, conn *wsConnection) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.connections[sessionID] = append(s.connections[sessionID], conn)
+	existing := s.connections[sessionID]
+	kept := make([]*wsConnection, 0, len(existing)+1)
+	replaced := make([]*wsConnection, 0, 1)
+	for _, current := range existing {
+		if current.userID == conn.userID && current.isHost == conn.isHost {
+			replaced = append(replaced, current)
+			continue
+		}
+		kept = append(kept, current)
+	}
+	kept = append(kept, conn)
+	s.connections[sessionID] = kept
+	observer := s.connObserver
+	s.mu.Unlock()
 
-	if s.connObserver != nil {
-		s.connObserver(sessionID, conn.userID, conn.isHost, true)
+	// Fecha conexões antigas da mesma identidade para evitar peers duplicados.
+	for _, previous := range replaced {
+		_ = previous.conn.Close()
+	}
+
+	if len(replaced) > 0 {
+		log.Printf("[SIGNALING] Replaced %d stale connection(s) for user=%s session=%s role=%s", len(replaced), conn.userID, sessionID, map[bool]string{true: "host", false: "guest"}[conn.isHost])
+	}
+
+	if observer != nil {
+		for range replaced {
+			observer(sessionID, conn.userID, conn.isHost, false)
+		}
+		observer(sessionID, conn.userID, conn.isHost, true)
 	}
 }
 
 // unregisterConnection remove uma conexão WebSocket
 func (s *SignalingService) unregisterConnection(sessionID string, conn *wsConnection) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	removed := false
 	conns := s.connections[sessionID]
 	for i, c := range conns {
 		if c == conn {
 			s.connections[sessionID] = append(conns[:i], conns[i+1:]...)
+			removed = true
 			break
 		}
 	}
+	observer := s.connObserver
+	s.mu.Unlock()
 
-	conn.conn.Close()
+	_ = conn.conn.Close()
 
-	if s.connObserver != nil {
-		s.connObserver(sessionID, conn.userID, conn.isHost, false)
+	if removed && observer != nil {
+		observer(sessionID, conn.userID, conn.isHost, false)
 	}
 }
 
@@ -353,4 +379,24 @@ func (s *SignalingService) NotifyPermissionChange(sessionID, guestUserID, permis
 		Payload:      permission,
 		FromUserID:   "host",
 	})
+}
+
+// NotifySessionEnded notifica todos os peers de que a sessão encerrou e limpa recursos de signaling.
+func (s *SignalingService) NotifySessionEnded(sessionID, fromUserID string) {
+	if sessionID == "" {
+		return
+	}
+
+	if fromUserID == "" {
+		fromUserID = "host"
+	}
+
+	// Envia notificação explícita antes de fechar as conexões.
+	s.broadcastToSession(sessionID, "", SignalMessage{
+		Type:       "session_ended",
+		FromUserID: fromUserID,
+		SessionID:  sessionID,
+	})
+
+	s.CleanupSession(sessionID)
 }

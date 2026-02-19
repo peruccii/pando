@@ -29,6 +29,23 @@
   pointer-events: none;
 }
 
+.app-session-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) - 5);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: flex-end;
+  padding: 56px 16px 16px;
+}
+
+.app-session-overlay__panel {
+  width: min(540px, calc(100vw - 32px));
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+}
+
 /* ============================================
    LOADING
    ============================================ */

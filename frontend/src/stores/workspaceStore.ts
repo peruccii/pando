@@ -130,6 +130,52 @@ const normalizeWorkspaceNodes = (
 }
 
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set, get) => {
+  let snapshotCacheLoaded = false
+  let snapshotCacheLoadPromise: Promise<void> | null = null
+  let pendingSnapshotsByPaneID: Record<string, TerminalSnapshotDTO> = {}
+
+  const ensureSnapshotCache = async () => {
+    if (snapshotCacheLoaded) {
+      return
+    }
+    if (snapshotCacheLoadPromise) {
+      await snapshotCacheLoadPromise
+      return
+    }
+
+    snapshotCacheLoadPromise = (async () => {
+      if (!window.go?.main?.App?.GetTerminalSnapshots) {
+        snapshotCacheLoaded = true
+        return
+      }
+
+      try {
+        const snapshots = await window.go.main.App.GetTerminalSnapshots()
+        const map: Record<string, TerminalSnapshotDTO> = {}
+        for (const snapshot of snapshots || []) {
+          if (!snapshot?.paneId) continue
+          map[snapshot.paneId] = snapshot
+        }
+        pendingSnapshotsByPaneID = map
+
+        if ((snapshots?.length || 0) > 0) {
+          await window.go.main.App.ClearTerminalSnapshots?.()
+          console.log(`[WorkspaceStore] Loaded ${snapshots.length} terminal snapshots for restore`)
+        }
+      } catch (err) {
+        console.warn('[WorkspaceStore] Failed to load terminal snapshots:', err)
+      } finally {
+        snapshotCacheLoaded = true
+      }
+    })()
+
+    try {
+      await snapshotCacheLoadPromise
+    } finally {
+      snapshotCacheLoadPromise = null
+    }
+  }
+
   const syncLayoutFromWorkspace = (workspaceID: number | null, workspaces: WorkspaceNode[]) => {
     if (!workspaceID) {
       useLayoutStore.getState().replaceWithPanes([])
@@ -150,6 +196,23 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
     })
 
     const panes = orderedAgents.map((agent) => toPaneInfo(workspaceID, agent))
+    for (const pane of panes) {
+      const snapshot = pendingSnapshotsByPaneID[pane.id]
+      if (!snapshot) {
+        continue
+      }
+
+      pane.config = {
+        ...(pane.config || {}),
+        restoreSnapshot: snapshot,
+        shell: snapshot.shell || pane.config?.shell || '',
+        cwd: snapshot.cwd || pane.config?.cwd || '',
+        useDocker: snapshot.useDocker ?? !!pane.config?.useDocker,
+      }
+
+      delete pendingSnapshotsByPaneID[pane.id]
+    }
+
     useLayoutStore.getState().replaceWithPanes(panes)
   }
 
@@ -186,6 +249,8 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
     if (persistBackend && window.go?.main?.App?.SetActiveWorkspace) {
       await window.go.main.App.SetActiveWorkspace(workspaceID)
     }
+
+    await ensureSnapshotCache()
 
     const historyByAgentId = await fetchWorkspaceHistory(workspaceID)
     const nextWorkspaces = currentWorkspaces.map((ws) => ({

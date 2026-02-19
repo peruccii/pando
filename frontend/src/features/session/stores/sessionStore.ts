@@ -3,7 +3,7 @@ import { create } from 'zustand'
 // === Types ===
 
 export type SessionStatus = 'idle' | 'waiting' | 'active' | 'ended'
-export type GuestStatus = 'pending' | 'approved' | 'rejected' | 'connected'
+export type GuestStatus = 'pending' | 'approved' | 'rejected' | 'connected' | 'expired'
 export type Permission = 'read_only' | 'read_write'
 export type SessionMode = 'docker' | 'liveshare'
 export type SessionRole = 'host' | 'guest' | 'none'
@@ -50,8 +50,11 @@ export interface GuestRequest {
 
 export interface JoinResult {
   sessionID: string
+  sessionCode?: string
   hostName: string
   status: string
+  guestUserID?: string
+  approvalExpiresAt?: string
 }
 
 export interface ICEServerConfig {
@@ -73,6 +76,7 @@ interface SessionState {
   // Guest-side (aguardando aprovação)
   joinResult: JoinResult | null
   isWaitingApproval: boolean
+  wasRestoredSession: boolean
 
   // WebRTC
   isP2PConnected: boolean
@@ -94,6 +98,7 @@ interface SessionActions {
   // Guest actions
   setJoinResult: (result: JoinResult | null) => void
   setWaitingApproval: (waiting: boolean) => void
+  setRestoredSession: (restored: boolean) => void
 
   // P2P
   setP2PConnected: (connected: boolean) => void
@@ -113,6 +118,7 @@ const initialState: SessionState = {
   error: null,
   joinResult: null,
   isWaitingApproval: false,
+  wasRestoredSession: false,
   isP2PConnected: false,
   iceServers: [],
   signalingPort: 9876,
@@ -131,7 +137,9 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
 
   addPendingGuest: (guest) =>
     set((state) => ({
-      pendingGuests: [...state.pendingGuests, guest],
+      pendingGuests: state.pendingGuests.some((g) => g.userID === guest.userID)
+        ? state.pendingGuests.map((g) => (g.userID === guest.userID ? guest : g))
+        : [...state.pendingGuests, guest],
     })),
 
   removePendingGuest: (userID) =>
@@ -157,6 +165,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
   setJoinResult: (result) => set({ joinResult: result }),
 
   setWaitingApproval: (waiting) => set({ isWaitingApproval: waiting }),
+
+  setRestoredSession: (restored) => set({ wasRestoredSession: restored }),
 
   setP2PConnected: (connected) => set({ isP2PConnected: connected }),
 

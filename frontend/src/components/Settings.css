@@ -338,6 +338,57 @@
   cursor: not-allowed;
 }
 
+.settings-terminal-preview {
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--terminal-bg);
+}
+
+.settings-terminal-preview__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.settings-terminal-preview__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.settings-terminal-preview__dot--red {
+  background: #ff5f57;
+}
+
+.settings-terminal-preview__dot--yellow {
+  background: #febc2e;
+}
+
+.settings-terminal-preview__dot--green {
+  background: #28c840;
+}
+
+.settings-terminal-preview__title {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.settings-terminal-preview__body {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--terminal-fg);
+  line-height: 1.4;
+  min-height: 170px;
+  overflow: auto;
+  white-space: pre;
+}
+
 .settings-theme-preview {
   width: 100%;
   height: 48px;
