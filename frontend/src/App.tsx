@@ -20,6 +20,7 @@ import { BroadcastBar, useBroadcastStore } from './features/broadcast'
 import { GitActivityPanel, useGitActivity } from './features/git-activity'
 import { useWorkspaceStore } from './stores/workspaceStore'
 import { SessionPanel, JoinSessionDialog } from './features/session'
+import { GitPanelScreen } from './features/git-panel/components/GitPanelScreen'
 
 export function App() {
     useWailsEvents()
@@ -37,6 +38,7 @@ export function App() {
     const isBroadcastActive = useBroadcastStore((s) => s.isActive)
     const [isSessionPanelOpen, setIsSessionPanelOpen] = useState(false)
     const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false)
+    const [isGitPanelOpen, setIsGitPanelOpen] = useState(false)
 
     /** Quando o CommandCenter crashar, resetar o layout para estado limpo */
     const handleLayoutError = useCallback(() => {
@@ -90,6 +92,22 @@ export function App() {
         }
     }, [])
 
+    useEffect(() => {
+        const onOpenGitPanel = () => setIsGitPanelOpen(true)
+        const onCloseGitPanel = () => setIsGitPanelOpen(false)
+        const onToggleGitPanel = () => setIsGitPanelOpen((prev) => !prev)
+
+        window.addEventListener('git-panel:open', onOpenGitPanel)
+        window.addEventListener('git-panel:close', onCloseGitPanel)
+        window.addEventListener('git-panel:toggle', onToggleGitPanel)
+
+        return () => {
+            window.removeEventListener('git-panel:open', onOpenGitPanel)
+            window.removeEventListener('git-panel:close', onCloseGitPanel)
+            window.removeEventListener('git-panel:toggle', onToggleGitPanel)
+        }
+    }, [])
+
     if (!isReady) {
         return (
             <div className="app-loading">
@@ -104,7 +122,9 @@ export function App() {
             <Titlebar />
             <TabBar />
             <main className="app__main">
-                {hasPanes ? (
+                {isGitPanelOpen ? (
+                    <GitPanelScreen onBack={() => setIsGitPanelOpen(false)} />
+                ) : hasPanes ? (
                     <ErrorBoundary onReset={handleLayoutError}>
                         <CommandCenter />
                     </ErrorBoundary>

@@ -64,6 +64,15 @@ function extractPermission(payload: unknown): string | null {
   return typeof maybePermission === 'string' ? maybePermission : null
 }
 
+function extractPermissionTargetUserID(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+  const value = payload as { guestUserID?: unknown; userID?: unknown }
+  const maybeTarget = typeof value.guestUserID === 'string' ? value.guestUserID : value.userID
+  return typeof maybeTarget === 'string' ? maybeTarget : null
+}
+
 function normalizeSessionCode(code: string): string {
   const cleaned = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
   if (cleaned.length <= 3) {
@@ -215,7 +224,7 @@ function setupRuntimeListenersOnce() {
         runtimeState.p2p.sendControlMessage('permission_change', {
           guestUserID: payload.guestUserID,
           permission: payload.permission,
-        })
+        }, payload.guestUserID)
       }
     })
 
@@ -766,7 +775,11 @@ export function useSession() {
 
         if (msg.type === 'permission_change') {
           const permission = extractPermission(msg.payload)
-          if (permission === 'read_only') {
+          const targetGuestUserID = extractPermissionTargetUserID(msg.payload)
+          const currentUserID = getCurrentIdentity().userID
+          const isTargetedToCurrentUser = !targetGuestUserID || targetGuestUserID === currentUserID
+
+          if (permission === 'read_only' && isTargetedToCurrentUser) {
             store.setError('Seu acesso de escrita foi revogado pelo host.')
           }
         }

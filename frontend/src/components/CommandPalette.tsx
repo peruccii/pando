@@ -71,11 +71,11 @@ export function CommandPalette() {
     },
     {
       id: 'new-github',
-      label: 'Novo GitHub',
-      description: 'Criar um painel de integração GitHub',
+      label: 'Abrir Git Panel',
+      description: 'Abrir tela dedicada de Source Control',
       icon: <GitBranch size={16} />,
       category: 'Painéis',
-      action: () => addPane('github'),
+      action: () => window.dispatchEvent(new CustomEvent('git-panel:open')),
     },
     {
       id: 'close-pane',

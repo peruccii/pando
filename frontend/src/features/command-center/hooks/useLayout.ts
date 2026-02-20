@@ -1,6 +1,5 @@
 import { useCallback } from 'react'
 import { useLayoutStore } from '../stores/layoutStore'
-import type { PaneType } from '../types/layout'
 
 /**
  * Hook para gerenciamento de layout do Command Center.
@@ -23,13 +22,15 @@ export function useLayout() {
 
   /** Criar novo painel de AI Agent */
   const newAIAgent = useCallback((title?: string) => {
-    return addPane('ai_agent' as PaneType, title)
+    return addPane('ai_agent', title)
   }, [addPane])
 
-  /** Criar novo painel GitHub */
+  /** Abrir tela dedicada do Git Panel */
   const newGitHub = useCallback((title?: string) => {
-    return addPane('github' as PaneType, title)
-  }, [addPane])
+    void title // compatibilidade de assinatura
+    window.dispatchEvent(new CustomEvent('git-panel:open'))
+    return undefined
+  }, [])
 
   /** Remove o painel ativo */
   const closeActivePane = useCallback(() => {
