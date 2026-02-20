@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Container, Laptop, AlertTriangle, X, Shield, Users } from 'lucide-react'
 import { useWorkspaceStore } from '../stores/workspaceStore'
+import { useSessionStore } from '../features/session/stores/sessionStore'
 import './NewTerminalDialog.css'
 
 export function NewTerminalDialog() {
@@ -8,6 +9,9 @@ export function NewTerminalDialog() {
   const [isDockerAvailable, setIsDockerAvailable] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const createTerminalForActiveWorkspace = useWorkspaceStore((s) => s.createTerminalForActiveWorkspace)
+  const sessionRole = useSessionStore((s) => s.role)
+  const hasCollaborativeSession = useSessionStore((s) => Boolean(s.session?.id))
+  const isGuestScoped = sessionRole === 'guest' && hasCollaborativeSession
 
   const checkDocker = useCallback(async () => {
     try {
@@ -36,6 +40,10 @@ export function NewTerminalDialog() {
   }, [isOpen, checkDocker])
 
   const handleSelect = async (useDocker: boolean) => {
+    if (isGuestScoped) {
+      setErrorMessage('Somente o host pode criar terminais nesta sessão colaborativa.')
+      return
+    }
     if (useDocker && !isDockerAvailable) return
 
     setErrorMessage(null)
@@ -76,8 +84,8 @@ export function NewTerminalDialog() {
         <div className="new-terminal-dialog__options">
           {/* Option: Docker */}
           <div 
-            className={`new-terminal-card new-terminal-card--recommended ${!isDockerAvailable ? 'new-terminal-card--disabled' : ''}`}
-            onClick={() => isDockerAvailable && handleSelect(true)}
+            className={`new-terminal-card new-terminal-card--recommended ${(!isDockerAvailable || isGuestScoped) ? 'new-terminal-card--disabled' : ''}`}
+            onClick={() => isDockerAvailable && !isGuestScoped && handleSelect(true)}
           >
             <div className="new-terminal-card__icon-wrapper new-terminal-card__icon-wrapper--docker">
               <Container size={24} />
@@ -126,8 +134,8 @@ export function NewTerminalDialog() {
 
           {/* Option: Local */}
           <div 
-            className="new-terminal-card"
-            onClick={() => handleSelect(false)}
+            className={`new-terminal-card ${isGuestScoped ? 'new-terminal-card--disabled' : ''}`}
+            onClick={() => !isGuestScoped && handleSelect(false)}
           >
             <div className="new-terminal-card__icon-wrapper new-terminal-card__icon-wrapper--local">
               <Laptop size={24} />

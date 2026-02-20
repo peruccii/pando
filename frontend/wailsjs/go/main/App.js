@@ -318,8 +318,8 @@ export function SessionApproveGuest(arg1, arg2) {
   return window['go']['main']['App']['SessionApproveGuest'](arg1, arg2);
 }
 
-export function SessionCreate(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SessionCreate'](arg1, arg2, arg3);
+export function SessionCreate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SessionCreate'](arg1, arg2, arg3, arg4);
 }
 
 export function SessionEnd(arg1) {
@@ -340,6 +340,10 @@ export function SessionGetICEServers() {
 
 export function SessionGetSession(arg1) {
   return window['go']['main']['App']['SessionGetSession'](arg1);
+}
+
+export function SessionGetSignalingURL() {
+  return window['go']['main']['App']['SessionGetSignalingURL']();
 }
 
 export function SessionJoin(arg1, arg2, arg3) {
@@ -384,6 +388,10 @@ export function StartPolling(arg1, arg2) {
 
 export function StopPolling() {
   return window['go']['main']['App']['StopPolling']();
+}
+
+export function SyncGuestWorkspace(arg1) {
+  return window['go']['main']['App']['SyncGuestWorkspace'](arg1);
 }
 
 export function UnwatchProject(arg1) {

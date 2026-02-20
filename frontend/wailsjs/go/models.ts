@@ -1149,6 +1149,7 @@ export namespace session {
 	    guestUserID: string;
 	    // Go type: time
 	    approvalExpiresAt?: any;
+	    workspaceName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new JoinResult(source);
@@ -1162,6 +1163,7 @@ export namespace session {
 	        this.status = source["status"];
 	        this.guestUserID = source["guestUserID"];
 	        this.approvalExpiresAt = this.convertValues(source["approvalExpiresAt"], null);
+	        this.workspaceName = source["workspaceName"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1187,6 +1189,8 @@ export namespace session {
 	    defaultPerm: string;
 	    allowAnonymous: boolean;
 	    mode: string;
+	    workspaceID: number;
+	    workspaceName?: string;
 	    dockerImage?: string;
 	    projectPath?: string;
 	    codeTTLMinutes: number;
@@ -1201,6 +1205,8 @@ export namespace session {
 	        this.defaultPerm = source["defaultPerm"];
 	        this.allowAnonymous = source["allowAnonymous"];
 	        this.mode = source["mode"];
+	        this.workspaceID = source["workspaceID"];
+	        this.workspaceName = source["workspaceName"];
 	        this.dockerImage = source["dockerImage"];
 	        this.projectPath = source["projectPath"];
 	        this.codeTTLMinutes = source["codeTTLMinutes"];

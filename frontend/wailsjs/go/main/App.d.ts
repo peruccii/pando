@@ -168,7 +168,7 @@ export function SaveTheme(arg1:string):Promise<void>;
 
 export function SessionApproveGuest(arg1:string,arg2:string):Promise<void>;
 
-export function SessionCreate(arg1:number,arg2:string,arg3:boolean):Promise<session.Session>;
+export function SessionCreate(arg1:number,arg2:string,arg3:boolean,arg4:number):Promise<session.Session>;
 
 export function SessionEnd(arg1:string):Promise<void>;
 
@@ -179,6 +179,8 @@ export function SessionGetAuditLogs(arg1:string,arg2:number):Promise<Array<datab
 export function SessionGetICEServers():Promise<Array<session.ICEServerConfig>>;
 
 export function SessionGetSession(arg1:string):Promise<session.Session>;
+
+export function SessionGetSignalingURL():Promise<string>;
 
 export function SessionJoin(arg1:string,arg2:string,arg3:string):Promise<session.JoinResult>;
 
@@ -201,6 +203,8 @@ export function SetWorkspaceColor(arg1:number,arg2:string):Promise<database.Work
 export function StartPolling(arg1:string,arg2:string):Promise<void>;
 
 export function StopPolling():Promise<void>;
+
+export function SyncGuestWorkspace(arg1:string):Promise<database.Workspace>;
 
 export function UnwatchProject(arg1:string):Promise<void>;
 

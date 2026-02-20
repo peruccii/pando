@@ -17,6 +17,7 @@ type ISessionService interface {
 
 	// Guest
 	JoinSession(code string, guestUserID string, guestInfo GuestInfo) (*JoinResult, error)
+	MarkGuestConnected(sessionID, guestUserID string) error
 
 	// Query
 	GetSession(sessionID string) (*Session, error)
@@ -86,6 +87,8 @@ type SessionConfig struct {
 	DefaultPerm    Permission  `json:"defaultPerm"`    // "read_only"
 	AllowAnonymous bool        `json:"allowAnonymous"` // Guests sem login GitHub
 	Mode           SessionMode `json:"mode"`           // "docker" ou "liveshare"
+	WorkspaceID    uint        `json:"workspaceID"`
+	WorkspaceName  string      `json:"workspaceName,omitempty"`
 	DockerImage    string      `json:"dockerImage,omitempty"`
 	ProjectPath    string      `json:"projectPath,omitempty"`
 	CodeTTLMinutes int         `json:"codeTTLMinutes"` // Default: 15
@@ -125,6 +128,7 @@ type JoinResult struct {
 	Status            string    `json:"status"` // "pending" — guest deve aguardar aprovação
 	GuestUserID       string    `json:"guestUserID"`
 	ApprovalExpiresAt time.Time `json:"approvalExpiresAt,omitempty"`
+	WorkspaceName     string    `json:"workspaceName,omitempty"`
 }
 
 // SignalMessage é uma mensagem trocada via WebSocket para signaling WebRTC

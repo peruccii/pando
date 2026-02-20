@@ -35,6 +35,7 @@ interface WorkspaceState {
   activeWorkspaceId: number | null
   historyByAgentId: Record<number, string>
   isLoading: boolean
+  isSessionWorkspaceScoped: boolean
 }
 
 interface WorkspaceActions {
@@ -47,6 +48,8 @@ interface WorkspaceActions {
   createTerminalForActiveWorkspace: (useDocker: boolean) => Promise<void>
   moveTerminalToWorkspace: (agentId: number, targetWorkspaceId: number) => Promise<void>
   closePane: (paneId: string) => Promise<void>
+  applySessionWorkspaceSnapshot: (workspace: WorkspaceNode) => void
+  clearSessionWorkspaceSnapshot: () => Promise<void>
 }
 
 interface WorkspaceColorAppAPI {
@@ -127,6 +130,15 @@ const normalizeWorkspaceNodes = (
     return []
   }
   return workspaces.map((workspace) => normalizeWorkspaceNode(workspace))
+}
+
+function emitWorkspaceSyncHint(workspaceID: number) {
+  if (!Number.isInteger(workspaceID) || workspaceID <= 0) {
+    return
+  }
+  window.dispatchEvent(new CustomEvent('session:host-workspace:changed', {
+    detail: { workspaceID },
+  }))
 }
 
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set, get) => {
@@ -272,8 +284,13 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
     activeWorkspaceId: null,
     historyByAgentId: {},
     isLoading: false,
+    isSessionWorkspaceScoped: false,
 
     loadWorkspaces: async () => {
+      if (get().isSessionWorkspaceScoped) {
+        return
+      }
+
       if (!window.go?.main?.App?.GetWorkspacesWithAgents) {
         const fallback: WorkspaceNode = {
           id: 1,
@@ -318,10 +335,17 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
     },
 
     setActiveWorkspace: async (workspaceId) => {
+      if (get().isSessionWorkspaceScoped && get().activeWorkspaceId !== workspaceId) {
+        return
+      }
       await activateWorkspace(workspaceId, true)
     },
 
     createWorkspace: async (name) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('workspace changes are disabled for guest collaboration')
+      }
+
       const current = normalizeWorkspaceNodes(get().workspaces)
       const suggestedName = (name || '').trim() || `Workspace ${current.length + 1}`
 
@@ -350,10 +374,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
       const next = [...current, created]
       set({ workspaces: next })
       await activateWorkspace(created.id, true, next)
+      emitWorkspaceSyncHint(created.id)
       return created
     },
 
     renameWorkspace: async (workspaceId, name) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('workspace changes are disabled for guest collaboration')
+      }
+
       const trimmed = name.trim()
       if (!trimmed) {
         return
@@ -368,9 +397,14 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
           ws.id === workspaceId ? { ...ws, name: trimmed } : ws,
         ),
       }))
+      emitWorkspaceSyncHint(workspaceId)
     },
 
     setWorkspaceColor: async (workspaceId, color) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('workspace changes are disabled for guest collaboration')
+      }
+
       const appApi = window.go?.main?.App as WorkspaceColorAppAPI | undefined
       if (appApi?.SetWorkspaceColor) {
         await appApi.SetWorkspaceColor(workspaceId, color)
@@ -381,9 +415,14 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
           ws.id === workspaceId ? { ...ws, color } : ws,
         ),
       }))
+      emitWorkspaceSyncHint(workspaceId)
     },
 
     deleteWorkspace: async (workspaceId) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('workspace changes are disabled for guest collaboration')
+      }
+
       const state = get()
       const stateWorkspaces = normalizeWorkspaceNodes(state.workspaces)
       if (stateWorkspaces.length <= 1) {
@@ -407,9 +446,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
         set({ activeWorkspaceId: null, historyByAgentId: {} })
         syncLayoutFromWorkspace(null, remaining)
       }
+
+      emitWorkspaceSyncHint(workspaceId)
     },
 
     createTerminalForActiveWorkspace: async (useDocker) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('only the host can create terminals in this collaboration session')
+      }
+
       let workspaceId = get().activeWorkspaceId
       if (!workspaceId) {
         await get().loadWorkspaces()
@@ -651,9 +696,14 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
       })
       syncLayoutFromWorkspace(finalWorkspaceID, next)
       useLayoutStore.getState().setActivePaneId(`ws-${finalWorkspaceID}-agent-${createdAgent.id}`)
+      emitWorkspaceSyncHint(finalWorkspaceID)
     },
 
     moveTerminalToWorkspace: async (agentId, targetWorkspaceId) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('only the host can move terminals in this collaboration session')
+      }
+
       if (!Number.isInteger(agentId) || agentId <= 0) {
         throw new Error('invalid agent id')
       }
@@ -727,6 +777,8 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
             useLayoutStore.getState().setActivePaneId(movedPaneId)
           }
         }
+        emitWorkspaceSyncHint(sourceWorkspace.id)
+        emitWorkspaceSyncHint(targetWorkspaceId)
       } catch (err) {
         console.error('[WorkspaceStore] Failed to move terminal:', err)
         await get().loadWorkspaces()
@@ -734,6 +786,10 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
     },
 
     closePane: async (paneId) => {
+      if (get().isSessionWorkspaceScoped) {
+        throw new Error('only the host can close terminals in this collaboration session')
+      }
+
       const pane = useLayoutStore.getState().panes[paneId]
       if (!pane) {
         return
@@ -766,6 +822,38 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
 
       set({ workspaces: nextWorkspaces })
       syncLayoutFromWorkspace(workspaceID, nextWorkspaces)
+      emitWorkspaceSyncHint(workspaceID)
+    },
+
+    applySessionWorkspaceSnapshot: (workspace) => {
+      const normalized = normalizeWorkspaceNode(workspace)
+      const scopedWorkspace: WorkspaceNode = {
+        ...normalized,
+        isActive: true,
+      }
+
+      const scopedSet = [scopedWorkspace]
+      set({
+        workspaces: scopedSet,
+        activeWorkspaceId: scopedWorkspace.id,
+        historyByAgentId: {},
+        isSessionWorkspaceScoped: true,
+        isLoading: false,
+      })
+
+      syncLayoutFromWorkspace(scopedWorkspace.id, scopedSet)
+    },
+
+    clearSessionWorkspaceSnapshot: async () => {
+      if (!get().isSessionWorkspaceScoped) {
+        return
+      }
+
+      set({
+        isSessionWorkspaceScoped: false,
+      })
+
+      await get().loadWorkspaces()
     },
   }
 })

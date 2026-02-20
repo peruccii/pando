@@ -141,7 +141,25 @@ func TestJoinSessionRejectsExpiredCode(t *testing.T) {
 	}
 }
 
-func TestApproveGuestActivatesSessionAndInvalidatesCode(t *testing.T) {
+func TestJoinSessionRejectsAnonymousWhenDisabled(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{
+		AllowAnonymous: false,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	_, err = svc.JoinSession(session.Code, "anonymous-123", GuestInfo{Name: "Anonymous"})
+	if err == nil {
+		t.Fatalf("expected anonymous join to fail when allowAnonymous=false")
+	}
+	if !strings.Contains(err.Error(), "anonymous guests are not allowed") {
+		t.Fatalf("unexpected error = %v", err)
+	}
+}
+
+func TestApproveGuestKeepsCodeUntilFirstPeerConnected(t *testing.T) {
 	svc := newServiceForTest(nil)
 	session, err := svc.CreateSession("host-1", SessionConfig{})
 	if err != nil {
@@ -160,19 +178,42 @@ func TestApproveGuestActivatesSessionAndInvalidatesCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
-	if current.Status != StatusActive {
-		t.Fatalf("session status = %q, want %q", current.Status, StatusActive)
+	if current.Status != StatusWaiting {
+		t.Fatalf("session status = %q, want %q before peer_connected", current.Status, StatusWaiting)
 	}
 	if current.Guests[0].Status != GuestApproved {
 		t.Fatalf("guest status = %q, want %q", current.Guests[0].Status, GuestApproved)
 	}
-	if _, ok := svc.codeIndex[normalizeCode(session.Code)]; ok {
-		t.Fatalf("code should be invalidated after first approval")
+	if _, ok := svc.codeIndex[normalizeCode(session.Code)]; !ok {
+		t.Fatalf("code should stay valid until peer_connected")
 	}
 
 	_, err = svc.JoinSession(session.Code, "guest-2", GuestInfo{Name: "Guest Two"})
+	if err != nil {
+		t.Fatalf("join before peer_connected should still be allowed: %v", err)
+	}
+
+	if err := svc.MarkGuestConnected(session.ID, "guest-1"); err != nil {
+		t.Fatalf("MarkGuestConnected() error = %v", err)
+	}
+
+	current, err = svc.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if current.Status != StatusActive {
+		t.Fatalf("session status = %q, want %q after peer_connected", current.Status, StatusActive)
+	}
+	if current.Guests[0].Status != GuestConnected {
+		t.Fatalf("guest status = %q, want %q after peer_connected", current.Guests[0].Status, GuestConnected)
+	}
+	if _, ok := svc.codeIndex[normalizeCode(session.Code)]; ok {
+		t.Fatalf("code should be invalidated after first peer_connected")
+	}
+
+	_, err = svc.JoinSession(session.Code, "guest-3", GuestInfo{Name: "Guest Three"})
 	if err == nil {
-		t.Fatalf("expected join to fail after code invalidation")
+		t.Fatalf("expected join to fail after code invalidation on peer_connected")
 	}
 	if !strings.Contains(err.Error(), "session not found for code") {
 		t.Fatalf("unexpected error = %v", err)

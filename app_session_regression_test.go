@@ -84,7 +84,7 @@ func TestSessionRegression_TwoInstances_CreateJoinApproveRestartRestoreRejoin(t 
 	guest.sessionGatewayURL = gatewayURL
 	guest.session = nil
 
-	created, err := host1.SessionCreate(2, string(session.ModeLiveShare), true)
+	created, err := host1.SessionCreate(2, string(session.ModeLiveShare), true, 1)
 	if err != nil {
 		t.Fatalf("SessionCreate() error: %v", err)
 	}

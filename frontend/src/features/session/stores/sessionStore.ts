@@ -22,6 +22,8 @@ export interface SessionConfig {
   defaultPerm: Permission
   allowAnonymous: boolean
   mode: SessionMode
+  workspaceID: number
+  workspaceName?: string
   dockerImage?: string
   projectPath?: string
   codeTTLMinutes: number
@@ -55,6 +57,7 @@ export interface JoinResult {
   status: string
   guestUserID?: string
   approvalExpiresAt?: string
+  workspaceName?: string
 }
 
 export interface ICEServerConfig {
@@ -72,6 +75,7 @@ interface SessionState {
   pendingGuests: GuestRequest[]
   isLoading: boolean
   error: string | null
+  activeGuestUserID: string | null
 
   // Guest-side (aguardando aprovação)
   joinResult: JoinResult | null
@@ -99,6 +103,7 @@ interface SessionActions {
   setJoinResult: (result: JoinResult | null) => void
   setWaitingApproval: (waiting: boolean) => void
   setRestoredSession: (restored: boolean) => void
+  setActiveGuestUserID: (guestUserID: string | null) => void
 
   // P2P
   setP2PConnected: (connected: boolean) => void
@@ -116,6 +121,7 @@ const initialState: SessionState = {
   pendingGuests: [],
   isLoading: false,
   error: null,
+  activeGuestUserID: null,
   joinResult: null,
   isWaitingApproval: false,
   wasRestoredSession: false,
@@ -167,6 +173,8 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
   setWaitingApproval: (waiting) => set({ isWaitingApproval: waiting }),
 
   setRestoredSession: (restored) => set({ wasRestoredSession: restored }),
+
+  setActiveGuestUserID: (guestUserID) => set({ activeGuestUserID: guestUserID }),
 
   setP2PConnected: (connected) => set({ isP2PConnected: connected }),
 

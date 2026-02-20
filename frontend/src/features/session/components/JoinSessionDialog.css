@@ -171,3 +171,18 @@
   border-radius: var(--rounded-sm);
   border: 1px solid rgba(var(--error-rgb, 239, 68, 68), 0.15);
 }
+
+.join-dialog__waiting-workspace-alert {
+  font-size: var(--text-xs);
+  color: var(--accent-primary);
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--rounded-md);
+  border: 1px solid rgba(var(--accent-primary-rgb, 99, 102, 241), 0.2);
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.join-dialog__waiting-workspace-alert p {
+  margin: 0;
+}

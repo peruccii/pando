@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,13 +40,19 @@ func guestApprovalExpiresAt(joinedAt time.Time) time.Time {
 	return joinedAt.Add(guestApprovalTimeout)
 }
 
+func isAnonymousGuestID(guestUserID string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(guestUserID))
+	return normalized == "" || strings.HasPrefix(normalized, "anonymous-")
+}
+
 func buildJoinResult(session *Session, guest SessionGuest) *JoinResult {
 	result := &JoinResult{
-		SessionID:   session.ID,
-		SessionCode: session.Code,
-		HostName:    session.HostName,
-		Status:      string(guest.Status),
-		GuestUserID: guest.UserID,
+		SessionID:     session.ID,
+		SessionCode:   session.Code,
+		HostName:      session.HostName,
+		Status:        string(guest.Status),
+		GuestUserID:   guest.UserID,
+		WorkspaceName: session.Config.WorkspaceName,
 	}
 	if guest.Status == GuestPending {
 		result.ApprovalExpiresAt = guestApprovalExpiresAt(guest.JoinedAt)
@@ -178,6 +185,9 @@ func (s *Service) JoinSession(code string, guestUserID string, guestInfo GuestIn
 	if session.Status == StatusEnded {
 		return nil, fmt.Errorf("session has ended")
 	}
+	if !session.Config.AllowAnonymous && isAnonymousGuestID(guestUserID) {
+		return nil, fmt.Errorf("anonymous guests are not allowed in this session")
+	}
 
 	// Expirar pedidos pendentes com mais de 5 minutos.
 	s.expirePendingGuestsLocked(session, now)
@@ -270,13 +280,6 @@ func (s *Service) ApproveGuest(sessionID, guestUserID string) error {
 			session.Guests[i].Status = GuestApproved
 			log.Printf("[SESSION] Guest %s approved in session %s", guestUserID, session.Code)
 
-			// Ativar sessão se era a primeira aprovação
-			if session.Status == StatusWaiting {
-				session.Status = StatusActive
-				// Invalidar o código (uso único)
-				delete(s.codeIndex, normalizeCode(session.Code))
-			}
-
 			// Notificar o guest que foi aprovado
 			if s.emitEvent != nil {
 				s.emitEvent("session:guest_approved", map[string]interface{}{
@@ -288,6 +291,65 @@ func (s *Service) ApproveGuest(sessionID, guestUserID string) error {
 
 			return nil
 		}
+	}
+
+	return fmt.Errorf("guest not found: %s", guestUserID)
+}
+
+// MarkGuestConnected marca um guest aprovado como conectado e invalida o código após a primeira conexão real.
+func (s *Service) MarkGuestConnected(sessionID, guestUserID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	hasConnectedGuest := false
+	for _, guest := range session.Guests {
+		if guest.Status == GuestConnected {
+			hasConnectedGuest = true
+			break
+		}
+	}
+
+	for i, guest := range session.Guests {
+		if guest.UserID != guestUserID {
+			continue
+		}
+
+		switch guest.Status {
+		case GuestConnected:
+			return nil
+		case GuestApproved:
+			// fluxo válido.
+		case GuestPending:
+			return fmt.Errorf("guest %s is pending approval", guestUserID)
+		case GuestRejected:
+			return fmt.Errorf("guest %s was rejected", guestUserID)
+		case GuestExpired:
+			return fmt.Errorf("guest %s request has expired", guestUserID)
+		default:
+			return fmt.Errorf("guest cannot connect from status: %s", guest.Status)
+		}
+
+		session.Guests[i].Status = GuestConnected
+		if session.Status == StatusWaiting {
+			session.Status = StatusActive
+		}
+		if !hasConnectedGuest {
+			delete(s.codeIndex, normalizeCode(session.Code))
+		}
+
+		log.Printf("[SESSION] Guest %s connected in session %s", guestUserID, session.Code)
+		if s.emitEvent != nil {
+			s.emitEvent("session:guest_connected", map[string]interface{}{
+				"sessionID":   sessionID,
+				"guestUserID": guestUserID,
+			})
+		}
+		return nil
 	}
 
 	return fmt.Errorf("guest not found: %s", guestUserID)

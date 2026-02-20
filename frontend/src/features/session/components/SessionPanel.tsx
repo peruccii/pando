@@ -14,6 +14,7 @@ import {
   AlertCircle
 } from 'lucide-react'
 import { useSession } from '../hooks/useSession'
+import { useWorkspaceStore } from '../../../stores/workspaceStore'
 import './SessionPanel.css'
 
 interface PermissionPromptState {
@@ -53,12 +54,36 @@ export function SessionPanel() {
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showAuditLogs, setShowAuditLogs] = useState(false)
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPromptState | null>(null)
+  const workspaces = useWorkspaceStore((s) => s.workspaces)
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
 
   const [createOpts, setCreateOpts] = useState({
     maxGuests: 10,
     mode: 'liveshare' as 'liveshare' | 'docker',
     allowAnonymous: false,
+    workspaceID: activeWorkspaceId ?? 0,
   })
+
+  useEffect(() => {
+    if (!showCreateDialog) {
+      return
+    }
+
+    const fallbackWorkspaceID = activeWorkspaceId ?? workspaces[0]?.id ?? 0
+    setCreateOpts((prev) => {
+      if (prev.workspaceID > 0) {
+        const stillExists = workspaces.some((workspace) => workspace.id === prev.workspaceID)
+        if (stillExists) {
+          return prev
+        }
+      }
+
+      return {
+        ...prev,
+        workspaceID: fallbackWorkspaceID,
+      }
+    })
+  }, [activeWorkspaceId, showCreateDialog, workspaces])
 
   useEffect(() => {
     if (session?.id && role === 'host') {
@@ -170,6 +195,26 @@ export function SessionPanel() {
               </select>
             </div>
 
+            <div className="session-panel__form-group">
+              <label className="session-panel__label">Workspace</label>
+              <select
+                className="input"
+                value={createOpts.workspaceID || ''}
+                onChange={(e) =>
+                  setCreateOpts((prev) => ({
+                    ...prev,
+                    workspaceID: Number(e.target.value) || 0,
+                  }))
+                }
+              >
+                {workspaces.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="session-panel__form-group session-panel__form-group--row">
               <label className="session-panel__label">
                 <input
@@ -190,7 +235,7 @@ export function SessionPanel() {
               <button
                 className="btn btn--primary"
                 onClick={handleCreate}
-                disabled={isLoading}
+                disabled={isLoading || createOpts.workspaceID <= 0}
               >
                 {isLoading ? 'Creating...' : 'Create Session'}
               </button>

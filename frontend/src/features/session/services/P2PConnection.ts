@@ -14,7 +14,13 @@ export const DATA_CHANNELS = {
 export type DataChannelName = (typeof DATA_CHANNELS)[keyof typeof DATA_CHANNELS]
 
 // Tipos de mensagens específicas do canal CONTROL
-export type ControlMessageType = 'scroll_sync' | 'permission_change' | 'resize' | 'kick'
+export type ControlMessageType =
+  | 'scroll_sync'
+  | 'permission_change'
+  | 'resize'
+  | 'kick'
+  | 'workspace_scope_request'
+  | 'workspace_scope_sync'
 
 export interface ControlMessage {
   type: ControlMessageType
@@ -30,6 +36,9 @@ export interface CursorAwarenessPayload {
   column: number
   row: number
   isTyping: boolean
+  typingPreview?: string
+  paneID?: string
+  paneTitle?: string
   updatedAt: number
 }
 
@@ -87,7 +96,34 @@ function isCursorAwarenessPayload(value: unknown): value is CursorAwarenessPaylo
     typeof payload.column === 'number' &&
     typeof payload.row === 'number' &&
     typeof payload.isTyping === 'boolean' &&
+    (typeof payload.typingPreview === 'undefined' || typeof payload.typingPreview === 'string') &&
+    (typeof payload.paneID === 'undefined' || typeof payload.paneID === 'string') &&
+    (typeof payload.paneTitle === 'undefined' || typeof payload.paneTitle === 'string') &&
     typeof payload.updatedAt === 'number'
+}
+
+function resolveSignalingBaseURL(explicitURL?: string, fallbackPort = 9876): string {
+  const fallback = `ws://127.0.0.1:${fallbackPort}/ws/signal`
+  const candidate = (explicitURL || '').trim()
+  if (!candidate) {
+    return fallback
+  }
+
+  const withScheme = candidate.includes('://') ? candidate : `ws://${candidate}`
+  try {
+    const parsed = new URL(withScheme)
+    if (parsed.protocol === 'http:') parsed.protocol = 'ws:'
+    if (parsed.protocol === 'https:') parsed.protocol = 'wss:'
+    if (!parsed.pathname || parsed.pathname === '/') {
+      parsed.pathname = '/ws/signal'
+    }
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    console.warn('[P2P] Invalid signaling URL, using fallback:', explicitURL)
+    return fallback
+  }
 }
 
 /**
@@ -136,13 +172,19 @@ export class P2PConnection {
     userID: string
     isHost: boolean
     iceServers: ICEServerConfig[]
+    signalingURL?: string
     signalingPort?: number
   }) {
     this.sessionID = opts.sessionID
     this.userID = opts.userID
     this.isHost = opts.isHost
     this.iceServers = opts.iceServers
-    this.signalingURL = `ws://localhost:${opts.signalingPort || 9876}/ws/signal?session=${opts.sessionID}&user=${opts.userID}&role=${opts.isHost ? 'host' : 'guest'}`
+    const baseURL = resolveSignalingBaseURL(opts.signalingURL, opts.signalingPort || 9876)
+    const parsedURL = new URL(baseURL)
+    parsedURL.searchParams.set('session', opts.sessionID)
+    parsedURL.searchParams.set('user', opts.userID)
+    parsedURL.searchParams.set('role', opts.isHost ? 'host' : 'guest')
+    this.signalingURL = parsedURL.toString()
 
     this.yDoc = new Y.Doc()
     this.yInput = this.yDoc.getText('terminal-input')

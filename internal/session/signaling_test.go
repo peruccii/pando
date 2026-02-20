@@ -29,6 +29,25 @@ func connectSignalWS(t *testing.T, serverURL, sessionID, userID, role string) *w
 	return conn
 }
 
+func dialSignalWSWithOrigin(t *testing.T, serverURL, sessionID, userID, role, origin string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/signal" +
+		"?session=" + url.QueryEscape(sessionID) +
+		"&user=" + url.QueryEscape(userID) +
+		"&role=" + url.QueryEscape(role)
+
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 2 * time.Second,
+	}
+	return dialer.Dial(wsURL, header)
+}
+
 func mustWriteSignal(t *testing.T, conn *websocket.Conn, msg SignalMessage) {
 	t.Helper()
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -321,4 +340,52 @@ func TestSignalingReplacesDuplicateIdentityConnection(t *testing.T) {
 	if !staleClosed {
 		t.Fatalf("expected first host connection to be closed")
 	}
+}
+
+func TestSignalingRejectsDisallowedOrigin(t *testing.T) {
+	t.Setenv("ORCH_SIGNALING_ALLOWED_ORIGINS", "")
+
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	signaling := NewSignalingService(svc)
+	server := httptest.NewServer(http.HandlerFunc(signaling.HandleWebSocket))
+	t.Cleanup(server.Close)
+
+	conn, resp, err := dialSignalWSWithOrigin(t, server.URL, session.ID, "guest-1", "guest", "https://evil.example")
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected websocket dial to fail for disallowed origin")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		if resp == nil {
+			t.Fatalf("expected HTTP 403, got nil response")
+		}
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestSignalingAllowsConfiguredOrigin(t *testing.T) {
+	t.Setenv("ORCH_SIGNALING_ALLOWED_ORIGINS", "https://trusted.example")
+
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	signaling := NewSignalingService(svc)
+	server := httptest.NewServer(http.HandlerFunc(signaling.HandleWebSocket))
+	t.Cleanup(server.Close)
+
+	conn, _, err := dialSignalWSWithOrigin(t, server.URL, session.ID, "guest-1", "guest", "https://trusted.example")
+	if err != nil {
+		t.Fatalf("expected websocket dial to succeed for configured origin: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
 }

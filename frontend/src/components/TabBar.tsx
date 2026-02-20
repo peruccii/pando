@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, DragEvent, CSSProperties, useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, X, Pencil, Palette } from 'lucide-react'
 import { useWorkspaceStore } from '../stores/workspaceStore'
+import { useSessionStore } from '../features/session/stores/sessionStore'
 import {
   clearTerminalWorkspaceDragPayload,
   hasTerminalWorkspaceDragPayload,
@@ -28,6 +29,8 @@ export function TabBar() {
   const setWorkspaceColor = useWorkspaceStore((s) => s.setWorkspaceColor)
   const deleteWorkspace = useWorkspaceStore((s) => s.deleteWorkspace)
   const moveTerminalToWorkspace = useWorkspaceStore((s) => s.moveTerminalToWorkspace)
+  const sessionRole = useSessionStore((s) => s.role)
+  const hasCollaborativeSession = useSessionStore((s) => Boolean(s.session?.id))
 
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<number | null>(null)
   const [draftName, setDraftName] = useState('')
@@ -42,9 +45,13 @@ export function TabBar() {
     workspaceColor: string
   } | null>(null)
 
-  const canDeleteWorkspace = workspaces.length > 1
+  const isGuestScoped = sessionRole === 'guest' && hasCollaborativeSession
+  const canDeleteWorkspace = !isGuestScoped && workspaces.length > 1
 
   const handleCreateWorkspace = async () => {
+    if (isGuestScoped) {
+      return
+    }
     try {
       await createWorkspace()
     } catch (err) {
@@ -53,6 +60,9 @@ export function TabBar() {
   }
 
   const handleDeleteWorkspace = async (workspaceId: number) => {
+    if (isGuestScoped) {
+      return
+    }
     try {
       await deleteWorkspace(workspaceId)
     } catch (err) {
@@ -61,6 +71,9 @@ export function TabBar() {
   }
 
   const startRename = (workspaceId: number, currentName: string) => {
+    if (isGuestScoped) {
+      return
+    }
     setEditingWorkspaceId(workspaceId)
     setDraftName(currentName)
     setContextMenu(null)
@@ -110,6 +123,9 @@ export function TabBar() {
   }
 
   const handleContextMenu = (event: React.MouseEvent, workspace: any) => {
+    if (isGuestScoped) {
+      return
+    }
     event.preventDefault()
     setContextMenu({
       x: event.clientX,
@@ -146,6 +162,9 @@ export function TabBar() {
   }, [])
 
   const handleColorSelect = async (workspaceId: number, color: string) => {
+    if (isGuestScoped) {
+      return
+    }
     try {
       await setWorkspaceColor(workspaceId, color)
     } catch (err) {
@@ -156,6 +175,9 @@ export function TabBar() {
   }
 
   const activateWorkspaceTab = (workspaceId: number) => {
+    if (isGuestScoped) {
+      return
+    }
     if (suppressNextTabClickRef.current) {
       suppressNextTabClickRef.current = false
       return
@@ -167,6 +189,9 @@ export function TabBar() {
   }
 
   const handleTabDragOver = (event: DragEvent<HTMLDivElement>, workspaceId: number) => {
+    if (isGuestScoped) {
+      return
+    }
     if (!hasTerminalWorkspaceDragPayload(event)) {
       return
     }
@@ -178,6 +203,9 @@ export function TabBar() {
   }
 
   const handleTabDragLeave = (event: DragEvent<HTMLDivElement>, workspaceId: number) => {
+    if (isGuestScoped) {
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     
@@ -189,6 +217,9 @@ export function TabBar() {
   }
 
   const handleTabDrop = async (event: DragEvent<HTMLDivElement>, workspaceId: number) => {
+    if (isGuestScoped) {
+      return
+    }
     if (!hasTerminalWorkspaceDragPayload(event)) {
       return
     }
@@ -317,20 +348,22 @@ export function TabBar() {
         })}
       </div>
 
-      <button
-        type="button"
-        className="tabbar__add"
-        title="Novo workspace"
-        onClick={() => {
-          handleCreateWorkspace().catch((err) => {
-            console.error('[TabBar] Failed to create workspace:', err)
-          })
-        }}
-      >
-        <Plus size={14} />
-      </button>
+      {!isGuestScoped && (
+        <button
+          type="button"
+          className="tabbar__add"
+          title="Novo workspace"
+          onClick={() => {
+            handleCreateWorkspace().catch((err) => {
+              console.error('[TabBar] Failed to create workspace:', err)
+            })
+          }}
+        >
+          <Plus size={14} />
+        </button>
+      )}
 
-      {contextMenu && (
+      {contextMenu && !isGuestScoped && (
         <div
           className="tab-context-menu"
           style={{ top: contextMenu.y, left: contextMenu.x }}

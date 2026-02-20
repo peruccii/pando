@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSessionStore } from '../stores/sessionStore'
-import { P2PConnection } from '../services/P2PConnection'
+import { DATA_CHANNELS, P2PConnection } from '../services/P2PConnection'
 import type { Session, GuestRequest, SessionRole } from '../stores/sessionStore'
 import type { ScrollSyncEvent } from '../../scroll-sync/types'
 import { useAuthStore } from '../../../stores/authStore'
+import { useLayoutStore } from '../../command-center/stores/layoutStore'
+import {
+  useWorkspaceStore,
+  type AgentSessionNode,
+  type WorkspaceNode,
+} from '../../../stores/workspaceStore'
 
 interface AuditLog {
   id: number
@@ -73,6 +79,567 @@ function extractPermissionTargetUserID(payload: unknown): string | null {
   return typeof maybeTarget === 'string' ? maybeTarget : null
 }
 
+interface TerminalPeerPayload {
+  data: string
+  paneID?: string
+  paneTitle?: string
+  agentDBID?: number
+  sessionID?: string
+}
+
+interface WorkspaceScopeSyncPayload {
+  workspaceID: number
+  workspace: WorkspaceNode
+}
+
+function decodeBase64UTF8(raw: string): string {
+  try {
+    const binaryString = atob(raw)
+    const bytes = new Uint8Array(binaryString.length)
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i)
+    }
+    return new TextDecoder().decode(bytes)
+  } catch {
+    return raw
+  }
+}
+
+function parseTerminalPeerPayload(payload: unknown): TerminalPeerPayload | null {
+  if (!payload || typeof payload !== 'object') return null
+  const value = payload as Record<string, unknown>
+  if (typeof value.data !== 'string' || value.data.length === 0) {
+    return null
+  }
+
+  const parsed: TerminalPeerPayload = { data: value.data }
+  if (typeof value.paneID === 'string') parsed.paneID = value.paneID
+  if (typeof value.paneTitle === 'string') parsed.paneTitle = value.paneTitle
+  if (typeof value.agentDBID === 'number' && Number.isFinite(value.agentDBID)) {
+    parsed.agentDBID = value.agentDBID
+  }
+  if (typeof value.sessionID === 'string') parsed.sessionID = value.sessionID
+  return parsed
+}
+
+function normalizeSharedWorkspaceAgents(rawAgents: unknown, fallbackWorkspaceID: number): AgentSessionNode[] {
+  if (!Array.isArray(rawAgents)) {
+    return []
+  }
+
+  const agents: AgentSessionNode[] = []
+  for (const item of rawAgents) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+
+    const value = item as Record<string, unknown>
+    const parsedAgentID = Number(value.id)
+    if (!Number.isInteger(parsedAgentID) || parsedAgentID <= 0) {
+      continue
+    }
+
+    const parsedWorkspaceID = Number(value.workspaceId)
+    const parsedSortOrder = Number(value.sortOrder)
+    const rawType = typeof value.type === 'string' ? value.type.trim() : ''
+    const rawStatus = typeof value.status === 'string' ? value.status.trim() : ''
+
+    agents.push({
+      id: parsedAgentID,
+      workspaceId: Number.isInteger(parsedWorkspaceID) && parsedWorkspaceID > 0 ? parsedWorkspaceID : fallbackWorkspaceID,
+      name: typeof value.name === 'string' && value.name.trim().length > 0
+        ? value.name
+        : `Terminal ${parsedAgentID}`,
+      type: rawType.length > 0 ? rawType : 'terminal',
+      shell: typeof value.shell === 'string' ? value.shell : '',
+      cwd: typeof value.cwd === 'string' ? value.cwd : '',
+      useDocker: Boolean(value.useDocker),
+      sessionId: typeof value.sessionId === 'string' && value.sessionId.length > 0
+        ? value.sessionId
+        : undefined,
+      status: rawStatus.length > 0 ? rawStatus : 'idle',
+      sortOrder: Number.isInteger(parsedSortOrder) ? parsedSortOrder : agents.length,
+      isMinimized: Boolean(value.isMinimized),
+    })
+  }
+
+  return agents.sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) {
+      return a.sortOrder - b.sortOrder
+    }
+    return a.id - b.id
+  })
+}
+
+function parseWorkspaceScopeSyncPayload(payload: unknown): WorkspaceScopeSyncPayload | null {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const value = payload as Record<string, unknown>
+  const rawWorkspace = value.workspace
+  if (!rawWorkspace || typeof rawWorkspace !== 'object') {
+    return null
+  }
+
+  const workspaceValue = rawWorkspace as Record<string, unknown>
+  const parsedWorkspaceID = Number(
+    value.workspaceID ?? workspaceValue.id,
+  )
+  if (!Number.isInteger(parsedWorkspaceID) || parsedWorkspaceID <= 0) {
+    return null
+  }
+
+  const normalizedWorkspace: WorkspaceNode = {
+    id: parsedWorkspaceID,
+    userId: typeof workspaceValue.userId === 'string' ? workspaceValue.userId : 'host',
+    name: typeof workspaceValue.name === 'string' && workspaceValue.name.trim().length > 0
+      ? workspaceValue.name
+      : `Workspace ${parsedWorkspaceID}`,
+    path: typeof workspaceValue.path === 'string' ? workspaceValue.path : '',
+    gitRemote: typeof workspaceValue.gitRemote === 'string' ? workspaceValue.gitRemote : undefined,
+    owner: typeof workspaceValue.owner === 'string' ? workspaceValue.owner : undefined,
+    repo: typeof workspaceValue.repo === 'string' ? workspaceValue.repo : undefined,
+    color: typeof workspaceValue.color === 'string' ? workspaceValue.color : undefined,
+    isActive: true,
+    lastOpenedAt: typeof workspaceValue.lastOpenedAt === 'string' ? workspaceValue.lastOpenedAt : undefined,
+    agents: normalizeSharedWorkspaceAgents(workspaceValue.agents, parsedWorkspaceID),
+  }
+
+  return {
+    workspaceID: parsedWorkspaceID,
+    workspace: normalizedWorkspace,
+  }
+}
+
+function buildScopedHostWorkspaceSnapshot(): WorkspaceScopeSyncPayload | null {
+  const sessionState = useSessionStore.getState()
+  if (sessionState.role !== 'host' || !sessionState.session) {
+    return null
+  }
+
+  const scopedWorkspaceID = Number(sessionState.session.config?.workspaceID || 0)
+  if (!Number.isInteger(scopedWorkspaceID) || scopedWorkspaceID <= 0) {
+    return null
+  }
+
+  const workspaceState = useWorkspaceStore.getState()
+  const scopedWorkspace = workspaceState.workspaces.find((workspace) => workspace.id === scopedWorkspaceID)
+  if (!scopedWorkspace) {
+    return null
+  }
+
+  const layoutState = useLayoutStore.getState()
+  const liveAgentsFromLayout: AgentSessionNode[] = []
+  const paneIDsInOrder = layoutState.paneOrder.length > 0
+    ? layoutState.paneOrder
+    : Object.keys(layoutState.panes)
+  paneIDsInOrder.forEach((paneID, index) => {
+    const pane = layoutState.panes[paneID]
+    if (!pane || pane.workspaceID !== scopedWorkspaceID || pane.type !== 'terminal') {
+      return
+    }
+
+    const agentID = Number(pane.agentDBID)
+    if (!Number.isInteger(agentID) || agentID <= 0) {
+      return
+    }
+
+    const config = (pane.config || {}) as Record<string, unknown>
+    liveAgentsFromLayout.push({
+      id: agentID,
+      workspaceId: scopedWorkspaceID,
+      name: typeof pane.title === 'string' && pane.title.trim().length > 0
+        ? pane.title
+        : `Terminal ${agentID}`,
+      type: 'terminal',
+      shell: typeof config.shell === 'string' ? config.shell : '',
+      cwd: typeof config.cwd === 'string' ? config.cwd : '',
+      useDocker: Boolean(config.useDocker),
+      sessionId: typeof pane.sessionID === 'string' && pane.sessionID.length > 0
+        ? pane.sessionID
+        : undefined,
+      status: typeof pane.status === 'string' ? pane.status : 'idle',
+      sortOrder: index,
+      isMinimized: Boolean(pane.isMinimized),
+    })
+  })
+
+  const persistedAgents = normalizeSharedWorkspaceAgents(scopedWorkspace.agents, scopedWorkspaceID)
+  const mergedByID = new Map<number, AgentSessionNode>()
+  for (const agent of persistedAgents) {
+    mergedByID.set(agent.id, agent)
+  }
+  for (const liveAgent of liveAgentsFromLayout) {
+    const existing = mergedByID.get(liveAgent.id)
+    if (!existing) {
+      mergedByID.set(liveAgent.id, liveAgent)
+      continue
+    }
+    mergedByID.set(liveAgent.id, {
+      ...existing,
+      ...liveAgent,
+      // Mantém dados persistidos quando o pane não fornece valor útil.
+      shell: liveAgent.shell || existing.shell,
+      cwd: liveAgent.cwd || existing.cwd,
+      sessionId: liveAgent.sessionId || existing.sessionId,
+    })
+  }
+  const mergedAgents = Array.from(mergedByID.values()).sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) {
+      return a.sortOrder - b.sortOrder
+    }
+    return a.id - b.id
+  })
+
+  const workspaceName = scopedWorkspace.name?.trim() || sessionState.session.config?.workspaceName || `Workspace ${scopedWorkspaceID}`
+  return {
+    workspaceID: scopedWorkspaceID,
+    workspace: {
+      id: scopedWorkspaceID,
+      userId: scopedWorkspace.userId || 'host',
+      name: workspaceName,
+      path: scopedWorkspace.path || '',
+      gitRemote: scopedWorkspace.gitRemote,
+      owner: scopedWorkspace.owner,
+      repo: scopedWorkspace.repo,
+      color: scopedWorkspace.color,
+      isActive: true,
+      lastOpenedAt: scopedWorkspace.lastOpenedAt,
+      agents: mergedAgents,
+    },
+  }
+}
+
+function syncScopedWorkspaceToGuests(targetUserID?: string) {
+  if (!runtimeState.p2p || !runtimeState.p2pIsHost || !runtimeState.p2p.isConnected) {
+    return
+  }
+
+  const snapshot = buildScopedHostWorkspaceSnapshot()
+  if (!snapshot) {
+    return
+  }
+
+  runtimeState.p2p.sendControlMessage('workspace_scope_sync', snapshot, targetUserID)
+}
+
+interface GuestWorkspaceBinding {
+  sessionID: string
+  hostWorkspaceID: number
+  localWorkspaceID: number
+  workspaceName: string
+}
+
+const guestWorkspaceBindingsBySession = new Map<string, GuestWorkspaceBinding>()
+const guestWorkspaceSyncInFlight = new Set<string>()
+const guestWorkspaceResyncRequested = new Set<string>()
+
+function normalizeWorkspaceName(name: string | undefined, fallbackWorkspaceID: number): string {
+  const trimmed = typeof name === 'string' ? name.trim() : ''
+  if (trimmed.length > 0) {
+    return trimmed
+  }
+  return `Workspace ${fallbackWorkspaceID}`
+}
+
+function resolveGuestWorkspaceBinding(sessionID: string, hostWorkspaceID: number): GuestWorkspaceBinding | null {
+  const binding = guestWorkspaceBindingsBySession.get(sessionID)
+  if (!binding) {
+    return null
+  }
+  if (binding.hostWorkspaceID !== hostWorkspaceID) {
+    return null
+  }
+  return binding
+}
+
+function pickWorkspaceSnapshot(
+  primary?: WorkspaceNode,
+  secondary?: WorkspaceNode,
+): WorkspaceNode | undefined {
+  if (primary && primary.agents.length > 0) {
+    return primary
+  }
+  if (secondary && secondary.agents.length > 0) {
+    return secondary
+  }
+  return primary ?? secondary
+}
+
+function applyGuestWorkspaceScopeSnapshot(
+  sessionID: string,
+  hostWorkspaceID: number,
+  workspaceName: string,
+  incomingWorkspace?: WorkspaceNode,
+) {
+  const binding = resolveGuestWorkspaceBinding(sessionID, hostWorkspaceID)
+  const scopedWorkspaceID = binding?.localWorkspaceID || hostWorkspaceID
+  const workspaceState = useWorkspaceStore.getState()
+  const localWorkspace = workspaceState.workspaces.find((workspace) => workspace.id === scopedWorkspaceID)
+  const hostWorkspace = scopedWorkspaceID !== hostWorkspaceID
+    ? workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
+    : undefined
+  const existingWorkspace = pickWorkspaceSnapshot(hostWorkspace, localWorkspace)
+  const snapshotWorkspace = pickWorkspaceSnapshot(incomingWorkspace, existingWorkspace)
+
+  const mappedAgents = (snapshotWorkspace?.agents ?? []).map((agent) => ({
+    ...agent,
+    workspaceId: scopedWorkspaceID,
+    // Colaboração: não propagar minimização visual do host para o guest.
+    isMinimized: false,
+  }))
+
+  useWorkspaceStore.getState().applySessionWorkspaceSnapshot({
+    id: scopedWorkspaceID,
+    userId: snapshotWorkspace?.userId ?? 'host',
+    name: workspaceName,
+    path: snapshotWorkspace?.path ?? '',
+    gitRemote: snapshotWorkspace?.gitRemote,
+    owner: snapshotWorkspace?.owner,
+    repo: snapshotWorkspace?.repo,
+    color: snapshotWorkspace?.color,
+    isActive: true,
+    lastOpenedAt: snapshotWorkspace?.lastOpenedAt,
+    agents: mappedAgents,
+  })
+}
+
+function syncGuestWorkspaceRecord(sessionID: string, hostWorkspaceID: number, workspaceName: string) {
+  if (!window.go?.main?.App?.SyncGuestWorkspace) {
+    return
+  }
+
+  const existingBinding = resolveGuestWorkspaceBinding(sessionID, hostWorkspaceID)
+  if (existingBinding && existingBinding.workspaceName === workspaceName) {
+    return
+  }
+
+  const syncKey = `${sessionID}:${hostWorkspaceID}:${workspaceName.toLowerCase()}`
+  if (guestWorkspaceSyncInFlight.has(syncKey)) {
+    return
+  }
+
+  guestWorkspaceSyncInFlight.add(syncKey)
+  window.go.main.App.SyncGuestWorkspace(workspaceName)
+    .then((workspace) => {
+      const localWorkspaceID = Number(workspace?.id || 0)
+      if (!Number.isInteger(localWorkspaceID) || localWorkspaceID <= 0) {
+        return
+      }
+
+      guestWorkspaceBindingsBySession.set(sessionID, {
+        sessionID,
+        hostWorkspaceID,
+        localWorkspaceID,
+        workspaceName,
+      })
+
+      const workspaceState = useWorkspaceStore.getState()
+      const hostSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
+      const localSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === localWorkspaceID)
+      const preservedSnapshot = pickWorkspaceSnapshot(hostSnapshot, localSnapshot)
+      if (preservedSnapshot && preservedSnapshot.agents.length > 0) {
+        applyGuestWorkspaceScopeSnapshot(sessionID, hostWorkspaceID, workspaceName, preservedSnapshot)
+      }
+    })
+    .catch((err) => {
+      console.warn('[Session] Failed to sync shared workspace to local db:', err)
+    })
+    .finally(() => {
+      guestWorkspaceSyncInFlight.delete(syncKey)
+    })
+}
+
+function ensureGuestWorkspaceScope(sessionData: Session | null | undefined) {
+  if (!sessionData?.id || !sessionData.config) {
+    return
+  }
+
+  const hostWorkspaceID = Number(sessionData.config.workspaceID || 0)
+  if (!Number.isInteger(hostWorkspaceID) || hostWorkspaceID <= 0) {
+    return
+  }
+
+  const workspaceName = normalizeWorkspaceName(sessionData.config.workspaceName, hostWorkspaceID)
+  const binding = resolveGuestWorkspaceBinding(sessionData.id, hostWorkspaceID)
+  const workspaceState = useWorkspaceStore.getState()
+  const localSnapshot = binding
+    ? workspaceState.workspaces.find((workspace) => workspace.id === binding.localWorkspaceID)
+    : undefined
+  const hostSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
+  const preservedSnapshot = pickWorkspaceSnapshot(localSnapshot, hostSnapshot)
+  if (preservedSnapshot && preservedSnapshot.agents.length > 0) {
+    applyGuestWorkspaceScopeSnapshot(sessionData.id, hostWorkspaceID, workspaceName, preservedSnapshot)
+  }
+  syncGuestWorkspaceRecord(sessionData.id, hostWorkspaceID, workspaceName)
+}
+
+function requestGuestWorkspaceScopeSync(sessionID: string, workspaceID: number) {
+  const hasHydratedScope = () => {
+    const workspaceState = useWorkspaceStore.getState()
+    const binding = resolveGuestWorkspaceBinding(sessionID, workspaceID)
+    const hydratedLocal = binding
+      ? workspaceState.workspaces.find((workspace) => workspace.id === binding.localWorkspaceID)
+      : undefined
+    const hydratedHost = workspaceState.workspaces.find((workspace) => workspace.id === workspaceID)
+
+    return Boolean(
+      workspaceState.isSessionWorkspaceScoped &&
+      (
+        (hydratedLocal && hydratedLocal.agents.length > 0) ||
+        (hydratedHost && hydratedHost.agents.length > 0)
+      ),
+    )
+  }
+
+  const sendRequest = () => {
+    if (
+      !runtimeState.p2p ||
+      !runtimeState.p2p.isConnected ||
+      runtimeState.p2pIsHost ||
+      runtimeState.p2pSessionID !== sessionID
+    ) {
+      return
+    }
+
+    runtimeState.p2p.sendControlMessage('workspace_scope_request', { workspaceID })
+  }
+
+  sendRequest()
+
+  // Retries defensivos para casos em que o canal de controle abre após o estado "connected".
+  const retryDelaysMs = [300, 700, 1200, 2000, 3200, 5000]
+  retryDelaysMs.forEach((delay) => {
+    window.setTimeout(() => {
+      if (hasHydratedScope()) {
+        return
+      }
+      sendRequest()
+    }, delay)
+  })
+}
+
+function applyGuestWorkspaceScopeSync(sessionID: string, payload: WorkspaceScopeSyncPayload) {
+  if (!sessionID) {
+    return
+  }
+  const workspaceName = normalizeWorkspaceName(payload.workspace.name, payload.workspaceID)
+  applyGuestWorkspaceScopeSnapshot(sessionID, payload.workspaceID, workspaceName, payload.workspace)
+  syncGuestWorkspaceRecord(sessionID, payload.workspaceID, workspaceName)
+
+  if (
+    !guestWorkspaceResyncRequested.has(sessionID) &&
+    runtimeState.p2p &&
+    runtimeState.p2p.isConnected &&
+    !runtimeState.p2pIsHost &&
+    runtimeState.p2pSessionID === sessionID
+  ) {
+    guestWorkspaceResyncRequested.add(sessionID)
+    window.setTimeout(() => {
+      if (
+        !runtimeState.p2p ||
+        !runtimeState.p2p.isConnected ||
+        runtimeState.p2pIsHost ||
+        runtimeState.p2pSessionID !== sessionID
+      ) {
+        return
+      }
+      const workspaceID = Number(useSessionStore.getState().session?.config?.workspaceID || payload.workspaceID || 0)
+      runtimeState.p2p.sendControlMessage('workspace_scope_request', { workspaceID })
+    }, 350)
+  }
+}
+
+function clearGuestWorkspaceScope(sessionID?: string) {
+  if (sessionID) {
+    guestWorkspaceBindingsBySession.delete(sessionID)
+    guestWorkspaceResyncRequested.delete(sessionID)
+    for (const key of Array.from(guestWorkspaceSyncInFlight)) {
+      if (key.startsWith(`${sessionID}:`)) {
+        guestWorkspaceSyncInFlight.delete(key)
+      }
+    }
+  }
+  useWorkspaceStore.getState()
+    .clearSessionWorkspaceSnapshot()
+    .catch((err) => {
+      console.warn('[Session] Failed to restore local workspace view:', err)
+    })
+}
+
+function resolvePaneMetaBySessionID(sessionID: string): { id: string; title: string; agentDBID?: number } | null {
+  if (!sessionID) return null
+  const panes = useLayoutStore.getState().panes
+  const pane = Object.values(panes).find((item) => item.type === 'terminal' && item.sessionID === sessionID)
+  if (!pane) return null
+  return {
+    id: pane.id,
+    title: pane.title,
+    agentDBID: pane.agentDBID,
+  }
+}
+
+function resolveHostTargetSessionID(payload: TerminalPeerPayload): string | null {
+  const panes = useLayoutStore.getState().panes
+  const terminalPanes = Object.values(panes).filter((pane) => pane.type === 'terminal')
+
+  if (payload.sessionID) {
+    const bySession = terminalPanes.find((pane) => pane.sessionID === payload.sessionID)
+    if (bySession?.sessionID) return bySession.sessionID
+  }
+
+  if (typeof payload.agentDBID === 'number') {
+    const byAgent = terminalPanes.find((pane) => pane.agentDBID === payload.agentDBID)
+    if (byAgent?.sessionID) return byAgent.sessionID
+  }
+
+  if (payload.paneID) {
+    const byID = panes[payload.paneID]
+    if (byID?.type === 'terminal' && byID.sessionID) return byID.sessionID
+  }
+
+  if (payload.paneTitle) {
+    const byTitle = terminalPanes.find((pane) => pane.title === payload.paneTitle)
+    if (byTitle?.sessionID) return byTitle.sessionID
+  }
+
+  const activePaneID = useLayoutStore.getState().activePaneId
+  if (activePaneID) {
+    const activePane = panes[activePaneID]
+    if (activePane?.type === 'terminal' && activePane.sessionID) {
+      return activePane.sessionID
+    }
+  }
+
+  return null
+}
+
+function isTerminalSessionInWorkspaceScope(sessionID: string, workspaceID: number): boolean {
+  if (!sessionID) {
+    return false
+  }
+  if (!Number.isInteger(workspaceID) || workspaceID <= 0) {
+    return true
+  }
+
+  const panes = useLayoutStore.getState().panes
+  const paneMatch = Object.values(panes).find(
+    (pane) => pane.type === 'terminal' && pane.sessionID === sessionID,
+  )
+  if (paneMatch?.workspaceID) {
+    return paneMatch.workspaceID === workspaceID
+  }
+
+  const workspaceState = useWorkspaceStore.getState()
+  const scopedWorkspace = workspaceState.workspaces.find((workspace) => workspace.id === workspaceID)
+  if (!scopedWorkspace) {
+    return false
+  }
+
+  return scopedWorkspace.agents.some((agent) => agent.sessionId === sessionID)
+}
+
 function normalizeSessionCode(code: string): string {
   const cleaned = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
   if (cleaned.length <= 3) {
@@ -96,6 +663,7 @@ function resetGuestWaitingState(reason: string | null) {
   const state = useSessionStore.getState()
   state.setWaitingApproval(false)
   state.setJoinResult(null)
+  state.setActiveGuestUserID(null)
   if (runtimeState.joinPreviousRole === 'host') {
     state.setRole('host')
   } else {
@@ -112,6 +680,8 @@ function resetGuestWaitingState(reason: string | null) {
 
 function resetGuestActiveSession(reason: string | null) {
   const state = useSessionStore.getState()
+  const activeSessionID = state.session?.id
+  clearGuestWorkspaceScope(activeSessionID)
   state.setSession(null)
   state.setPendingGuests([])
   resetGuestWaitingState(reason)
@@ -120,8 +690,9 @@ function resetGuestActiveSession(reason: string | null) {
 function getCurrentIdentity() {
   const authUser = useAuthStore.getState().user
   const store = useSessionStore.getState()
+  const guestUserID = store.activeGuestUserID || store.joinResult?.guestUserID || ''
   const userID = authUser?.id ||
-    (store.role === 'guest' && store.joinResult?.guestUserID ? store.joinResult.guestUserID : '') ||
+    (store.role === 'guest' ? guestUserID : '') ||
     (store.role === 'host' && store.session?.hostUserID ? store.session.hostUserID : 'anonymous')
   const userName = authUser?.name || (store.role === 'host' ? 'Host' : 'Guest')
   const userColor = pickCursorColor(userID)
@@ -160,12 +731,13 @@ function setupRuntimeListenersOnce() {
       if (state.role !== 'guest' || !state.isWaitingApproval) {
         return
       }
-      const expectedGuestID = state.joinResult?.guestUserID
+      const expectedGuestID = state.activeGuestUserID || state.joinResult?.guestUserID
       if (expectedGuestID && payload.guestUserID !== expectedGuestID) {
         return
       }
       state.setSession(payload.session)
       state.setWaitingApproval(false)
+      state.setActiveGuestUserID(payload.guestUserID)
       state.setJoinResult(null)
       state.setError(null)
       runtimeState.joinPreviousRole = 'none'
@@ -177,7 +749,7 @@ function setupRuntimeListenersOnce() {
       if (state.role !== 'guest' || !state.isWaitingApproval) {
         return
       }
-      const expectedGuestID = state.joinResult?.guestUserID
+      const expectedGuestID = state.activeGuestUserID || state.joinResult?.guestUserID
       if (expectedGuestID && payload?.guestUserID && payload.guestUserID !== expectedGuestID) {
         return
       }
@@ -190,7 +762,7 @@ function setupRuntimeListenersOnce() {
       if (state.role !== 'guest' || !state.isWaitingApproval) {
         return
       }
-      const expectedGuestID = state.joinResult?.guestUserID
+      const expectedGuestID = state.activeGuestUserID || state.joinResult?.guestUserID
       if (expectedGuestID && payload?.guestUserID && payload.guestUserID !== expectedGuestID) {
         return
       }
@@ -254,6 +826,30 @@ function setupRuntimeListenersOnce() {
       }
     })
 
+    window.runtime.EventsOn('terminal:output', (msg: { sessionID?: string; data?: string }) => {
+      const current = useSessionStore.getState()
+      if (current.role !== 'host' || !runtimeState.p2p?.isConnected) {
+        return
+      }
+      if (!msg?.sessionID || typeof msg.data !== 'string' || msg.data.length === 0) {
+        return
+      }
+
+      const scopedWorkspaceID = Number(current.session?.config?.workspaceID || 0)
+      if (!isTerminalSessionInWorkspaceScope(msg.sessionID, scopedWorkspaceID)) {
+        return
+      }
+
+      const paneMeta = resolvePaneMetaBySessionID(msg.sessionID)
+      runtimeState.p2p.send(DATA_CHANNELS.TERMINAL_IO, 'pty_output', {
+        sessionID: msg.sessionID,
+        paneID: paneMeta?.id,
+        paneTitle: paneMeta?.title,
+        agentDBID: paneMeta?.agentDBID,
+        data: decodeBase64UTF8(msg.data),
+      })
+    })
+
     window.runtime.EventsOn('session:docker_fallback', (data: unknown) => {
       const payload = data as { reason?: string }
       useSessionStore.getState().setError(payload.reason ?? 'Docker indisponível. Sessão iniciou em Live Share.')
@@ -269,7 +865,14 @@ function setupRuntimeListenersOnce() {
 
   window.addEventListener('session:cursor-awareness:local', (e: Event) => {
     if (!runtimeState.p2p?.isConnected) return
-    const detail = (e as CustomEvent<{ column: number; row: number; isTyping: boolean }>).detail
+    const detail = (e as CustomEvent<{
+      column: number
+      row: number
+      isTyping: boolean
+      typingPreview?: string
+      paneID?: string
+      paneTitle?: string
+    }>).detail
     const identity = getCurrentIdentity()
     runtimeState.p2p.sendCursorAwareness({
       userID: identity.userID,
@@ -278,6 +881,9 @@ function setupRuntimeListenersOnce() {
       column: detail.column,
       row: detail.row,
       isTyping: detail.isTyping,
+      typingPreview: typeof detail.typingPreview === 'string' ? detail.typingPreview : undefined,
+      paneID: typeof detail.paneID === 'string' ? detail.paneID : undefined,
+      paneTitle: typeof detail.paneTitle === 'string' ? detail.paneTitle : undefined,
       updatedAt: Date.now(),
     })
   })
@@ -286,6 +892,46 @@ function setupRuntimeListenersOnce() {
     const detail = (e as CustomEvent<{ input: string }>).detail
     if (!runtimeState.p2p?.isConnected || typeof detail.input !== 'string') return
     runtimeState.p2p.appendSharedInput(detail.input)
+  })
+
+  window.addEventListener('session:terminal-input:guest', (e: Event) => {
+    const current = useSessionStore.getState()
+    if (current.role !== 'guest' || !runtimeState.p2p?.isConnected) {
+      return
+    }
+
+    const detail = (e as CustomEvent<TerminalPeerPayload>).detail
+    if (!detail || typeof detail.data !== 'string' || detail.data.length === 0) {
+      return
+    }
+
+    runtimeState.p2p.send(DATA_CHANNELS.TERMINAL_IO, 'terminal_input', {
+      data: detail.data,
+      sessionID: detail.sessionID,
+      paneID: detail.paneID,
+      paneTitle: detail.paneTitle,
+      agentDBID: detail.agentDBID,
+    })
+  })
+
+  window.addEventListener('session:host-workspace:changed', (e: Event) => {
+    const current = useSessionStore.getState()
+    if (current.role !== 'host' || !runtimeState.p2p?.isConnected) {
+      return
+    }
+
+    const scopedWorkspaceID = Number(current.session?.config?.workspaceID || 0)
+    if (!Number.isInteger(scopedWorkspaceID) || scopedWorkspaceID <= 0) {
+      return
+    }
+
+    const detail = (e as CustomEvent<{ workspaceID?: number }>).detail
+    const changedWorkspaceID = Number(detail?.workspaceID || 0)
+    if (changedWorkspaceID !== scopedWorkspaceID) {
+      return
+    }
+
+    syncScopedWorkspaceToGuests()
   })
 }
 
@@ -298,10 +944,11 @@ export function useSession() {
 
   const currentUserID = useMemo(() => {
     if (authUser?.id) return authUser.id
+    if (store.role === 'guest' && store.activeGuestUserID) return store.activeGuestUserID
     if (store.role === 'guest' && store.joinResult?.guestUserID) return store.joinResult.guestUserID
     if (store.role === 'host' && store.session?.hostUserID) return store.session.hostUserID
     return 'anonymous'
-  }, [authUser?.id, store.joinResult?.guestUserID, store.role, store.session?.hostUserID])
+  }, [authUser?.id, store.activeGuestUserID, store.joinResult?.guestUserID, store.role, store.session?.hostUserID])
 
   // Inicializa listeners globais de sessão apenas uma vez por app.
   useEffect(() => {
@@ -319,8 +966,9 @@ export function useSession() {
     }
 
     const isHost = store.role === 'host'
+    const guestUserID = store.activeGuestUserID || store.joinResult?.guestUserID
     const p2pUserID =
-      !isHost && store.joinResult?.guestUserID ? store.joinResult.guestUserID : currentUserID
+      !isHost && guestUserID ? guestUserID : currentUserID
 
     if (
       runtimeState.p2p &&
@@ -342,7 +990,50 @@ export function useSession() {
       .finally(() => {
         runtimeState.p2pConnectInFlight = false
       })
-  }, [currentUserID, store.joinResult?.guestUserID, store.role, store.session?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentUserID, store.activeGuestUserID, store.joinResult?.guestUserID, store.role, store.session?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (store.role === 'guest' && store.session && store.isP2PConnected) {
+      ensureGuestWorkspaceScope(store.session)
+    }
+  }, [store.isP2PConnected, store.role, store.session])
+
+  useEffect(() => {
+    if (store.role !== 'host' || !store.session?.id || !store.isP2PConnected) {
+      return
+    }
+
+    const scopedWorkspaceID = Number(store.session.config?.workspaceID || 0)
+    if (!Number.isInteger(scopedWorkspaceID) || scopedWorkspaceID <= 0) {
+      return
+    }
+
+    let lastSnapshotSignature = ''
+
+    const syncIfChanged = () => {
+      const snapshot = buildScopedHostWorkspaceSnapshot()
+      if (!snapshot || snapshot.workspaceID !== scopedWorkspaceID) {
+        return
+      }
+
+      const signature = JSON.stringify(snapshot)
+      if (signature === lastSnapshotSignature) {
+        return
+      }
+
+      lastSnapshotSignature = signature
+      syncScopedWorkspaceToGuests()
+    }
+
+    syncIfChanged()
+    const unsubscribe = useWorkspaceStore.subscribe(() => {
+      syncIfChanged()
+    })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [store.isP2PConnected, store.role, store.session?.config?.workspaceID, store.session?.id])
 
   // Guest: polling de aprovação para cenários multi-instância
   useEffect(() => {
@@ -351,7 +1042,7 @@ export function useSession() {
     }
 
     const sessionID = store.joinResult.sessionID
-    const guestUserID = store.joinResult.guestUserID || currentUserID
+    const guestUserID = store.joinResult.guestUserID || store.activeGuestUserID || currentUserID
     const approvalDeadline = resolveApprovalDeadline(store.joinResult.approvalExpiresAt)
     let cancelled = false
 
@@ -383,6 +1074,7 @@ export function useSession() {
         if (guest.status === 'approved' || guest.status === 'connected') {
           store.setSession(latestSession)
           store.setWaitingApproval(false)
+          store.setActiveGuestUserID(guestUserID)
           store.setJoinResult(null)
           store.setError(null)
           runtimeState.joinPreviousRole = 'none'
@@ -429,6 +1121,7 @@ export function useSession() {
     }
   }, [
     currentUserID,
+    store.activeGuestUserID,
     store,
     store.isWaitingApproval,
     store.joinResult?.approvalExpiresAt,
@@ -466,7 +1159,7 @@ export function useSession() {
 
   /** Cria uma nova sessão como Host */
   const createSession = useCallback(
-    async (opts?: { maxGuests?: number; mode?: string; allowAnonymous?: boolean }) => {
+    async (opts?: { maxGuests?: number; mode?: string; allowAnonymous?: boolean; workspaceID?: number }) => {
       store.setLoading(true)
       store.setError(null)
 
@@ -474,7 +1167,8 @@ export function useSession() {
         const session = await window.go!.main.App.SessionCreate(
           opts?.maxGuests ?? 10,
           opts?.mode ?? 'liveshare',
-          opts?.allowAnonymous ?? false
+          opts?.allowAnonymous ?? false,
+          opts?.workspaceID ?? 0,
         )
 
         store.setSession(session)
@@ -702,6 +1396,7 @@ export function useSession() {
           approvalExpiresAt: new Date(resolveApprovalDeadline(result.approvalExpiresAt)).toISOString(),
         }
         store.setJoinResult(normalizedJoinResult)
+        store.setActiveGuestUserID(normalizedJoinResult.guestUserID || null)
         // Join sempre coloca a instância no contexto de guest.
         store.setRole('guest')
         store.setWaitingApproval(true)
@@ -746,12 +1441,17 @@ export function useSession() {
         store.iceServers.length > 0
           ? store.iceServers
           : await window.go!.main.App.SessionGetICEServers()
+      const signalingApp = window.go?.main?.App as { SessionGetSignalingURL?: () => Promise<string> } | undefined
+      const signalingURL = signalingApp?.SessionGetSignalingURL
+        ? await signalingApp.SessionGetSignalingURL()
+        : ''
 
       const p2p = new P2PConnection({
         sessionID,
         userID,
         isHost,
         iceServers,
+        signalingURL,
         signalingPort: store.signalingPort,
       })
 
@@ -763,6 +1463,18 @@ export function useSession() {
       // Monitorar estado
       p2p.onStateChange((state) => {
         store.setP2PConnected(state === 'connected')
+        if (state !== 'connected') {
+          return
+        }
+
+        if (isHost) {
+          syncScopedWorkspaceToGuests()
+          return
+        }
+
+        const activeSession = useSessionStore.getState().session
+        const scopedWorkspaceID = Number(activeSession?.config?.workspaceID || 0)
+        requestGuestWorkspaceScopeSync(sessionID, scopedWorkspaceID)
       })
 
       // Listener para mensagens de Scroll Sync e permissões
@@ -782,6 +1494,28 @@ export function useSession() {
           if (permission === 'read_only' && isTargetedToCurrentUser) {
             store.setError('Seu acesso de escrita foi revogado pelo host.')
           }
+          return
+        }
+
+        if (msg.type === 'workspace_scope_request' && isHost) {
+          const requesterUserID = typeof msg.fromUserID === 'string' ? msg.fromUserID.trim() : ''
+          if (!requesterUserID) {
+            return
+          }
+          syncScopedWorkspaceToGuests(requesterUserID)
+          return
+        }
+
+        if (msg.type === 'workspace_scope_sync' && !isHost) {
+          const parsed = parseWorkspaceScopeSyncPayload(msg.payload)
+          if (!parsed) {
+            return
+          }
+          const activeSessionID = useSessionStore.getState().session?.id || runtimeState.p2pSessionID
+          if (!activeSessionID) {
+            return
+          }
+          applyGuestWorkspaceScopeSync(activeSessionID, parsed)
         }
       })
 
@@ -789,6 +1523,52 @@ export function useSession() {
       p2p.onMessage('github-state', (msg) => {
         if (msg.type === 'prs_updated') {
           window.dispatchEvent(new CustomEvent('github:p2p_state_updated', { detail: msg.payload }))
+        }
+      })
+
+      // Terminal compartilhado real: input do guest executa no PTY do host; output do host é espelhado nos guests.
+      p2p.onMessage('terminal-io', (msg) => {
+        if (msg.type === 'terminal_input' && isHost) {
+          const payload = parseTerminalPeerPayload(msg.payload)
+          const fromUserID = typeof msg.fromUserID === 'string' ? msg.fromUserID.trim() : ''
+          if (!payload || !fromUserID) {
+            return
+          }
+
+          const latest = useSessionStore.getState()
+          const guestPermission = latest.session?.guests?.find((guest) => guest.userID === fromUserID)?.permission
+          if (guestPermission !== 'read_write') {
+            console.warn(`[Session] terminal_input dropped: guest ${fromUserID} has no write permission`)
+            return
+          }
+
+          const targetSessionID = resolveHostTargetSessionID(payload)
+          if (!targetSessionID) {
+            console.warn('[Session] terminal_input dropped: could not resolve host terminal target', payload)
+            return
+          }
+
+          const scopedWorkspaceID = Number(latest.session?.config?.workspaceID || 0)
+          if (!isTerminalSessionInWorkspaceScope(targetSessionID, scopedWorkspaceID)) {
+            console.warn('[Session] terminal_input dropped: target outside scoped workspace', payload)
+            return
+          }
+
+          const appBindings = window.go?.main?.App as {
+            WriteTerminalAsGuest?: (sessionID: string, userID: string, data: string) => Promise<void>
+          } | undefined
+          appBindings?.WriteTerminalAsGuest?.(targetSessionID, fromUserID, payload.data).catch((err: unknown) => {
+            console.error('[Session] WriteTerminalAsGuest failed for guest input:', err)
+          })
+          return
+        }
+
+        if (msg.type === 'pty_output' && !isHost) {
+          const payload = parseTerminalPeerPayload(msg.payload)
+          if (!payload) {
+            return
+          }
+          window.dispatchEvent(new CustomEvent('session:terminal-output:remote', { detail: payload }))
         }
       })
 
@@ -874,7 +1654,7 @@ export function useSession() {
     }
 
     const sessionID = store.session.id
-    const guestUserID = store.joinResult?.guestUserID || currentUserID
+    const guestUserID = store.activeGuestUserID || store.joinResult?.guestUserID || currentUserID
     let cancelled = false
 
     const syncGuestSession = async () => {
@@ -921,7 +1701,7 @@ export function useSession() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [currentUserID, store, store.joinResult?.guestUserID, store.role, store.session?.id])
+  }, [currentUserID, store, store.activeGuestUserID, store.joinResult?.guestUserID, store.role, store.session?.id])
 
   return {
     // State

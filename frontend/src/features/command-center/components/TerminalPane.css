@@ -65,18 +65,17 @@
 /* Cursor awareness overlay */
 .terminal-pane__remote-cursor {
   position: absolute;
-  top: 6px;
-  bottom: 8px;
-  width: 2px;
+  width: 0;
   border-left: 2px solid var(--accent-primary);
   pointer-events: none;
   z-index: 12;
   opacity: 0.9;
+  transform: translate3d(0, 0, 0);
 }
 
 .terminal-pane__remote-cursor-label {
   position: absolute;
-  top: -4px;
+  top: -18px;
   left: 4px;
   font-size: 10px;
   color: #0b0d13;
@@ -84,5 +83,8 @@
   padding: 2px 6px;
   border-radius: 999px;
   white-space: nowrap;
+  max-width: min(55vw, 320px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   box-shadow: var(--shadow-sm);
 }

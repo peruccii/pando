@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,8 +36,10 @@ import (
 )
 
 const (
-	sessionGatewayAddr    = "127.0.0.1:9888"
-	sessionGatewayBaseURL = "http://" + sessionGatewayAddr
+	defaultSessionGatewayListenAddr   = "127.0.0.1:9888"
+	defaultSessionGatewayBaseURL      = "http://127.0.0.1:9888"
+	defaultSessionSignalingListenAddr = "127.0.0.1:9876"
+	defaultSessionSignalingBaseURL    = "ws://127.0.0.1:9876/ws/signal"
 )
 
 // App struct — ponto central do Wails, conecta todos os services
@@ -75,7 +78,10 @@ type App struct {
 	lastIndexFingerprints map[string]string // repoPath -> fingerprint do estado staged
 	anonymousGuestID      string
 	sessionGatewayOwner   bool
+	sessionGatewayAddr    string
 	sessionGatewayURL     string
+	signalingAddr         string
+	signalingURL          string
 }
 
 // NewApp creates a new App application struct
@@ -94,6 +100,7 @@ func NewApp() *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	log.Println("[ORCH] Starting up...")
+	a.configureSessionNetworking()
 
 	// 1. Garantir diretórios existem
 	if err := config.EnsureDataDirs(); err != nil {
@@ -189,22 +196,37 @@ func (a *App) Startup(ctx context.Context) {
 		}
 		a.auditSessionEvent(sessionID, userID, "guest_disconnected", "Guest disconnected from signaling channel")
 	})
-	// Iniciar servidor de sinalização WebSocket na porta 9876
-	if err := a.signaling.StartSignalingServer(9876); err != nil {
-		log.Printf("[ORCH] Error starting signaling server: %v", err)
+	a.signaling.SetSessionObserver(func(sessionID string) {
+		if a.sessionGatewayOwner {
+			a.persistSessionState(sessionID)
+		}
+	})
+
+	// Iniciar servidor de sinalização WebSocket configurável.
+	if shouldStartSessionListener(a.signalingAddr) {
+		if err := a.signaling.StartSignalingServerAddr(a.signalingAddr); err != nil {
+			log.Printf("[ORCH] Error starting signaling server on %s: %v", a.signalingAddr, err)
+		} else {
+			log.Printf("[ORCH] Signaling server started on %s", a.signalingAddr)
+		}
 	} else {
-		log.Println("[ORCH] Signaling server started on :9876")
+		log.Printf("[ORCH] Signaling listener disabled (addr=%q)", a.signalingAddr)
 	}
 
 	// Iniciar gateway HTTP local de sessões (compartilha sessões entre instâncias locais).
-	a.sessionHTTP = session.NewGatewayServer(a.session, sessionGatewayAddr)
-	a.sessionHTTP.SetObservers(a.persistSessionState, a.deletePersistedSessionState)
-	if err := a.sessionHTTP.Start(); err != nil {
-		a.sessionGatewayOwner = false
-		log.Printf("[ORCH] Session gateway unavailable on %s (using client mode): %v", sessionGatewayAddr, err)
+	if shouldStartSessionListener(a.sessionGatewayAddr) {
+		a.sessionHTTP = session.NewGatewayServer(a.session, a.sessionGatewayAddr)
+		a.sessionHTTP.SetObservers(a.persistSessionState, a.deletePersistedSessionState)
+		if err := a.sessionHTTP.Start(); err != nil {
+			a.sessionGatewayOwner = false
+			log.Printf("[ORCH] Session gateway unavailable on %s (using client mode): %v", a.sessionGatewayAddr, err)
+		} else {
+			a.sessionGatewayOwner = true
+			log.Printf("[ORCH] Session gateway started on %s", a.sessionGatewayAddr)
+		}
 	} else {
-		a.sessionGatewayOwner = true
-		log.Printf("[ORCH] Session gateway started on %s", sessionGatewayAddr)
+		a.sessionGatewayOwner = false
+		log.Printf("[ORCH] Session gateway listener disabled (addr=%q); using client mode", a.sessionGatewayAddr)
 	}
 
 	// 9. Configuração finalizada
@@ -864,6 +886,9 @@ func (a *App) createTerminalWithArgs(shell string, args []string, cwd string, us
 		a.ai.SetSessionState(sessionID, state)
 	}
 
+	// Aplica permissões de sessão colaborativa já existentes em novos terminais.
+	a.syncAllGuestPermissionsToPTY(sessionID)
+
 	return sessionID, nil
 }
 
@@ -1021,10 +1046,199 @@ func (a *App) WriteTerminal(sessionID string, data string) error {
 	return a.ptyMgr.Write(sessionID, decoded)
 }
 
+func (a *App) resolveSessionHostUserID() string {
+	hostUserID := "local"
+	if a.auth != nil {
+		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil && strings.TrimSpace(user.ID) != "" {
+			hostUserID = user.ID
+		}
+	}
+	return hostUserID
+}
+
+func guestTerminalPermissionFromSession(sessionGuest session.SessionGuest) terminal.TerminalPermission {
+	if sessionGuest.Status != session.GuestApproved && sessionGuest.Status != session.GuestConnected {
+		return terminal.PermissionNone
+	}
+	if sessionGuest.Permission == session.PermReadWrite {
+		return terminal.PermissionReadWrite
+	}
+	return terminal.PermissionReadOnly
+}
+
+func (a *App) resolveActiveCollabSession(hostUserID string) (*session.Session, error) {
+	hostUserID = strings.TrimSpace(hostUserID)
+	if hostUserID == "" {
+		return nil, fmt.Errorf("host userID is required")
+	}
+
+	if a.sessionGatewayOwner && a.session != nil {
+		sess, err := a.session.GetActiveSession(hostUserID)
+		if err == nil && sess != nil {
+			return sess, nil
+		}
+		if err != nil && !strings.Contains(err.Error(), "no active session") {
+			return nil, err
+		}
+		return nil, fmt.Errorf("no active collaboration session for user %s", hostUserID)
+	}
+
+	sess, err := a.gatewayGetActiveSession(hostUserID)
+	if err != nil {
+		return nil, fmt.Errorf("no active collaboration session for user %s", hostUserID)
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("no active collaboration session for user %s", hostUserID)
+	}
+	return sess, nil
+}
+
+func (a *App) resolveTerminalWorkspaceID(terminalSessionID string) (uint, error) {
+	if a.db == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
+
+	terminalSessionID = strings.TrimSpace(terminalSessionID)
+	if terminalSessionID == "" {
+		return 0, fmt.Errorf("terminal sessionID is required")
+	}
+
+	a.terminalStateMu.RLock()
+	agentID, ok := a.sessionAgents[terminalSessionID]
+	a.terminalStateMu.RUnlock()
+	if !ok || agentID == 0 {
+		return 0, fmt.Errorf("terminal %s is not bound to an agent", terminalSessionID)
+	}
+
+	agent, err := a.db.GetAgent(agentID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to resolve terminal workspace: %w", err)
+	}
+	if agent == nil || agent.WorkspaceID == 0 {
+		return 0, fmt.Errorf("terminal %s has invalid workspace binding", terminalSessionID)
+	}
+
+	return agent.WorkspaceID, nil
+}
+
+func (a *App) resolveGuestTerminalPermission(terminalSessionID, guestUserID string) (terminal.TerminalPermission, error) {
+	guestUserID = strings.TrimSpace(guestUserID)
+	if guestUserID == "" {
+		return terminal.PermissionNone, fmt.Errorf("guest userID is required")
+	}
+
+	hostUserID := a.resolveSessionHostUserID()
+	activeSession, err := a.resolveActiveCollabSession(hostUserID)
+	if err != nil {
+		return terminal.PermissionNone, err
+	}
+
+	var guestSession session.SessionGuest
+	foundGuest := false
+	for _, guest := range activeSession.Guests {
+		if guest.UserID == guestUserID {
+			guestSession = guest
+			foundGuest = true
+			break
+		}
+	}
+	if !foundGuest {
+		return terminal.PermissionNone, fmt.Errorf("guest %s is not part of active session", guestUserID)
+	}
+
+	permission := guestTerminalPermissionFromSession(guestSession)
+	if permission == terminal.PermissionNone {
+		return terminal.PermissionNone, fmt.Errorf("guest %s has no write permission", guestUserID)
+	}
+
+	scopedWorkspaceID := activeSession.Config.WorkspaceID
+	if scopedWorkspaceID > 0 {
+		terminalWorkspaceID, err := a.resolveTerminalWorkspaceID(terminalSessionID)
+		if err != nil {
+			return terminal.PermissionNone, err
+		}
+		if terminalWorkspaceID != scopedWorkspaceID {
+			return terminal.PermissionNone, fmt.Errorf(
+				"terminal %s is outside scoped workspace %d",
+				terminalSessionID,
+				scopedWorkspaceID,
+			)
+		}
+	}
+
+	return permission, nil
+}
+
+func (a *App) applyPermissionToAllPTY(guestUserID string, perm terminal.TerminalPermission) {
+	if a.ptyMgr == nil {
+		return
+	}
+	guestUserID = strings.TrimSpace(guestUserID)
+	if guestUserID == "" {
+		return
+	}
+	for _, info := range a.ptyMgr.GetSessions() {
+		if err := a.ptyMgr.SetPermission(info.ID, guestUserID, perm); err != nil {
+			log.Printf("[ORCH][SESSION] failed to set PTY permission session=%s guest=%s: %v", info.ID, guestUserID, err)
+		}
+	}
+}
+
+func (a *App) syncGuestPermissionAcrossPTYs(sessionID, guestUserID string) {
+	if a.ptyMgr == nil {
+		return
+	}
+	perm := terminal.PermissionNone
+	sess, err := a.SessionGetSession(sessionID)
+	if err == nil && sess != nil {
+		for _, guest := range sess.Guests {
+			if guest.UserID == guestUserID {
+				perm = guestTerminalPermissionFromSession(guest)
+				break
+			}
+		}
+	}
+	a.applyPermissionToAllPTY(guestUserID, perm)
+}
+
+func (a *App) syncAllGuestPermissionsToPTY(sessionID string) {
+	if a.ptyMgr == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+
+	hostUserID := a.resolveSessionHostUserID()
+	var sess *session.Session
+	if a.sessionGatewayOwner && a.session != nil {
+		if localSession, err := a.session.GetActiveSession(hostUserID); err == nil {
+			sess = localSession
+		}
+	} else if remoteSession, err := a.gatewayGetActiveSession(hostUserID); err == nil {
+		sess = remoteSession
+	}
+
+	if sess == nil {
+		return
+	}
+
+	for _, guest := range sess.Guests {
+		if err := a.ptyMgr.SetPermission(sessionID, guest.UserID, guestTerminalPermissionFromSession(guest)); err != nil {
+			log.Printf("[ORCH][SESSION] failed to set initial PTY permission session=%s guest=%s: %v", sessionID, guest.UserID, err)
+		}
+	}
+}
+
 // WriteTerminalAsGuest envia input ao PTY com validação de permissão (read_write).
 func (a *App) WriteTerminalAsGuest(sessionID, userID, data string) error {
 	if a.ptyMgr == nil {
 		return fmt.Errorf("pty manager not initialized")
+	}
+
+	permission, err := a.resolveGuestTerminalPermission(sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if err := a.ptyMgr.SetPermission(sessionID, userID, permission); err != nil {
+		return err
 	}
 
 	decoded := decodeTerminalInput(data)
@@ -1271,6 +1485,43 @@ func (a *App) CreateWorkspace(name string) (*database.Workspace, error) {
 		trimmed = fmt.Sprintf("Workspace %d", time.Now().Unix()%10000)
 	}
 
+	ws := &database.Workspace{
+		UserID: "local",
+		Name:   trimmed,
+		Path:   "",
+	}
+
+	if err := a.db.CreateWorkspace(ws); err != nil {
+		return nil, err
+	}
+
+	return ws, nil
+}
+
+// SyncGuestWorkspace creates or syncs a shared workspace in the guest's local database.
+func (a *App) SyncGuestWorkspace(name string) (*database.Workspace, error) {
+	if a.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		trimmed = "Shared Workspace"
+	}
+
+	// Attempt to find if an existing workspace has this exact name.
+	workspaces, err := a.db.ListWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ws := range workspaces {
+		if strings.EqualFold(strings.TrimSpace(ws.Name), trimmed) {
+			return &ws, nil
+		}
+	}
+
+	// Create if it doesn't exist
 	ws := &database.Workspace{
 		UserID: "local",
 		Name:   trimmed,
@@ -2156,13 +2407,130 @@ type sessionGatewayErrorResponse struct {
 	Error string `json:"error"`
 }
 
+func normalizeSessionListenerAddr(raw, fallback string) string {
+	if candidate := strings.TrimSpace(raw); candidate != "" {
+		return candidate
+	}
+	return fallback
+}
+
+func shouldStartSessionListener(addr string) bool {
+	switch strings.ToLower(strings.TrimSpace(addr)) {
+	case "", "off", "disabled", "none", "false", "0":
+		return false
+	default:
+		return true
+	}
+}
+
+func sessionPublicHostFromListenAddr(addr string) string {
+	trimmed := strings.TrimSpace(addr)
+	if trimmed == "" {
+		return "127.0.0.1"
+	}
+	if strings.HasPrefix(trimmed, ":") {
+		return "127.0.0.1" + trimmed
+	}
+
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return trimmed
+	}
+
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func normalizeSessionGatewayBaseURL(raw string, fallbackListenAddr string) string {
+	base := strings.TrimSpace(raw)
+	if base == "" {
+		base = "http://" + sessionPublicHostFromListenAddr(fallbackListenAddr)
+	}
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return defaultSessionGatewayBaseURL
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		scheme = "http"
+	}
+	parsed.Scheme = scheme
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func normalizeSessionSignalingURL(raw string, fallbackListenAddr string) string {
+	base := strings.TrimSpace(raw)
+	if base == "" {
+		base = "ws://" + sessionPublicHostFromListenAddr(fallbackListenAddr) + "/ws/signal"
+	}
+	if !strings.Contains(base, "://") {
+		base = "ws://" + base
+	}
+
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return defaultSessionSignalingBaseURL
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		parsed.Scheme = "ws"
+	case "https":
+		parsed.Scheme = "wss"
+	case "ws", "wss":
+		// ok
+	default:
+		parsed.Scheme = "ws"
+	}
+
+	if parsed.Path == "" || parsed.Path == "/" {
+		parsed.Path = "/ws/signal"
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func (a *App) configureSessionNetworking() {
+	a.sessionGatewayAddr = normalizeSessionListenerAddr(os.Getenv("ORCH_SESSION_GATEWAY_LISTEN_ADDR"), defaultSessionGatewayListenAddr)
+	a.sessionGatewayURL = normalizeSessionGatewayBaseURL(os.Getenv("ORCH_SESSION_GATEWAY_BASE_URL"), a.sessionGatewayAddr)
+	a.signalingAddr = normalizeSessionListenerAddr(os.Getenv("ORCH_SESSION_SIGNALING_LISTEN_ADDR"), defaultSessionSignalingListenAddr)
+	a.signalingURL = normalizeSessionSignalingURL(os.Getenv("ORCH_SESSION_SIGNALING_BASE_URL"), a.signalingAddr)
+}
+
 func (a *App) resolvedSessionGatewayBaseURL() string {
 	if a != nil {
 		if custom := strings.TrimSpace(a.sessionGatewayURL); custom != "" {
 			return strings.TrimRight(custom, "/")
 		}
 	}
-	return sessionGatewayBaseURL
+	return defaultSessionGatewayBaseURL
+}
+
+func (a *App) resolvedSessionSignalingURL() string {
+	if a != nil {
+		if custom := strings.TrimSpace(a.signalingURL); custom != "" {
+			return custom
+		}
+	}
+	return defaultSessionSignalingBaseURL
+}
+
+// SessionGetSignalingURL retorna a URL base do signaling WebSocket.
+func (a *App) SessionGetSignalingURL() string {
+	return a.resolvedSessionSignalingURL()
 }
 
 func (a *App) callSessionGateway(method, path string, requestBody interface{}, responseBody interface{}) error {
@@ -2408,13 +2776,25 @@ func (a *App) restorePersistedSessionStates() {
 	}
 }
 
-// SessionCreate cria uma nova sessão de colaboração
-func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*session.Session, error) {
-	hostUserID := "local"
-	if a.auth != nil {
-		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
-			hostUserID = user.ID
-		}
+// SessionCreate cria uma nova sessão de colaboração limitada a um workspace.
+func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, workspaceID uint) (*session.Session, error) {
+	hostUserID := a.resolveSessionHostUserID()
+
+	if a.db == nil {
+		return nil, fmt.Errorf("database service not initialized")
+	}
+
+	var (
+		scopedWorkspace *database.Workspace
+		err             error
+	)
+	if workspaceID == 0 {
+		scopedWorkspace, err = a.db.GetActiveWorkspace()
+	} else {
+		scopedWorkspace, err = a.db.GetWorkspace(workspaceID)
+	}
+	if err != nil || scopedWorkspace == nil {
+		return nil, fmt.Errorf("workspace not found")
 	}
 
 	cfg := session.SessionConfig{
@@ -2422,6 +2802,11 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 		DefaultPerm:    session.PermReadOnly,
 		AllowAnonymous: allowAnonymous,
 		Mode:           session.SessionMode(mode),
+		WorkspaceID:    scopedWorkspace.ID,
+		WorkspaceName:  strings.TrimSpace(scopedWorkspace.Name),
+	}
+	if cfg.WorkspaceName == "" {
+		cfg.WorkspaceName = fmt.Sprintf("Workspace %d", scopedWorkspace.ID)
 	}
 
 	if cfg.Mode == "" {
@@ -2439,15 +2824,11 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 				"reason": "Docker não está disponível. Sessão iniciada em Live Share.",
 			})
 		} else {
-			if a.db == nil {
-				return nil, fmt.Errorf("database service not initialized")
-			}
-			ws, err := a.db.GetActiveWorkspace()
-			if err != nil || ws == nil || ws.Path == "" {
-				return nil, fmt.Errorf("docker mode requires an active workspace with a valid path")
+			if scopedWorkspace.Path == "" {
+				return nil, fmt.Errorf("docker mode requires a workspace with a valid path")
 			}
 
-			cfg.ProjectPath = ws.Path
+			cfg.ProjectPath = scopedWorkspace.Path
 
 			// Verifica se existe imagem customizada criada pelo Stack Builder
 			customImage := "orch-custom-stack:latest"
@@ -2455,12 +2836,12 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 				cfg.DockerImage = customImage
 				log.Printf("[ORCH] Using custom stack image: %s", customImage)
 			} else {
-				cfg.DockerImage = a.docker.DetectImage(ws.Path)
+				cfg.DockerImage = a.docker.DetectImage(scopedWorkspace.Path)
 			}
 
 			containerCfg := docker.ContainerConfig{
 				Image:       cfg.DockerImage,
-				ProjectPath: ws.Path,
+				ProjectPath: scopedWorkspace.Path,
 				Memory:      "2g",
 				CPUs:        "2",
 				Shell:       "/bin/sh",
@@ -2487,10 +2868,7 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 		}
 	}
 
-	var (
-		createdSession *session.Session
-		err            error
-	)
+	var createdSession *session.Session
 
 	if !a.sessionGatewayOwner {
 		createdSession, err = a.gatewayCreateSession(hostUserID, cfg)
@@ -2523,7 +2901,18 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool) (*s
 		a.setSessionContainer(createdSession.ID, containerID)
 		a.auditSessionEvent(createdSession.ID, hostUserID, "container_started", fmt.Sprintf("container=%s image=%s", containerID, cfg.DockerImage))
 	}
-	a.auditSessionEvent(createdSession.ID, hostUserID, "session_created", fmt.Sprintf("mode=%s allowAnonymous=%t", createdSession.Mode, allowAnonymous))
+	a.auditSessionEvent(
+		createdSession.ID,
+		hostUserID,
+		"session_created",
+		fmt.Sprintf(
+			"mode=%s allowAnonymous=%t workspaceID=%d workspaceName=%s",
+			createdSession.Mode,
+			allowAnonymous,
+			cfg.WorkspaceID,
+			cfg.WorkspaceName,
+		),
+	)
 	if a.sessionGatewayOwner {
 		a.persistSessionState(createdSession.ID)
 	}
@@ -2605,6 +2994,7 @@ func (a *App) SessionApproveGuest(sessionID, guestUserID string) error {
 	}
 	a.auditSessionEvent(sessionID, guestUserID, "guest_approved", "Host approved guest in waiting room")
 	a.auditSessionEvent(sessionID, guestUserID, "guest_entered", "Guest admitted into collaboration session")
+	a.syncGuestPermissionAcrossPTYs(sessionID, guestUserID)
 	if a.sessionGatewayOwner {
 		a.persistSessionState(sessionID)
 	}
@@ -2634,6 +3024,13 @@ func (a *App) SessionRejectGuest(sessionID, guestUserID string) error {
 
 // SessionEnd encerra a sessão ativa
 func (a *App) SessionEnd(sessionID string) error {
+	guestsToRevoke := make([]string, 0, 8)
+	if current, getErr := a.SessionGetSession(sessionID); getErr == nil && current != nil {
+		for _, guest := range current.Guests {
+			guestsToRevoke = append(guestsToRevoke, guest.UserID)
+		}
+	}
+
 	if containerID, ok := a.popSessionContainer(sessionID); ok && a.docker != nil {
 		if err := a.docker.StopContainer(containerID); err != nil {
 			log.Printf("[DOCKER] stop failed for %s: %s", containerID, a.sanitizeForLogs(err.Error()))
@@ -2658,6 +3055,9 @@ func (a *App) SessionEnd(sessionID string) error {
 	}
 	if a.sessionGatewayOwner && a.signaling != nil {
 		a.signaling.NotifySessionEnded(sessionID, "host")
+	}
+	for _, guestUserID := range guestsToRevoke {
+		a.applyPermissionToAllPTY(guestUserID, terminal.PermissionNone)
 	}
 	a.auditSessionEvent(sessionID, "host", "session_ended", "Host ended the collaboration session")
 	a.deletePersistedSessionState(sessionID)
@@ -2722,6 +3122,7 @@ func (a *App) SessionSetGuestPermission(sessionID, guestUserID, permission strin
 		})
 		a.auditSessionEvent(sessionID, guestUserID, "permission_revoked", "Write permission revoked by host")
 	}
+	a.syncGuestPermissionAcrossPTYs(sessionID, guestUserID)
 	a.auditSessionEvent(sessionID, guestUserID, "permission_changed", fmt.Sprintf("from=%s to=%s", previousPerm, permission))
 	if a.sessionGatewayOwner {
 		a.persistSessionState(sessionID)
@@ -2743,6 +3144,7 @@ func (a *App) SessionKickGuest(sessionID, guestUserID string) error {
 	if err != nil {
 		return err
 	}
+	a.applyPermissionToAllPTY(guestUserID, terminal.PermissionNone)
 	a.auditSessionEvent(sessionID, guestUserID, "guest_kicked", "Guest removed by host")
 	a.auditSessionEvent(sessionID, guestUserID, "guest_left", "Guest left session after host removal")
 	if a.sessionGatewayOwner {
@@ -2753,12 +3155,7 @@ func (a *App) SessionKickGuest(sessionID, guestUserID string) error {
 
 // SessionGetActive retorna a sessão ativa do host
 func (a *App) SessionGetActive() (*session.Session, error) {
-	hostUserID := "local"
-	if a.auth != nil {
-		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
-			hostUserID = user.ID
-		}
-	}
+	hostUserID := a.resolveSessionHostUserID()
 
 	// Instâncias em client-mode não devem hidratar sessão ativa como Host.
 	// Isso evita que um guest local assuma role=host por compartilhar o mesmo userID default.

@@ -3,6 +3,7 @@ import { useLayoutStore } from '../features/command-center/stores/layoutStore'
 import { useAppStore } from '../stores/appStore'
 import { useWorkspaceStore } from '../stores/workspaceStore'
 import { useBroadcastStore } from '../features/broadcast/stores/broadcastStore'
+import { useSessionStore } from '../features/session/stores/sessionStore'
 import type { ShortcutCategory, ShortcutId } from '../features/shortcuts/shortcuts'
 import {
   SHORTCUT_DEFINITIONS,
@@ -69,6 +70,10 @@ export function useKeyboardShortcuts() {
     const actionByID: Record<ShortcutId, () => void> = {
       newTerminal: () => window.dispatchEvent(new CustomEvent('new-terminal:toggle')),
       closePane: () => {
+        const sessionState = useSessionStore.getState()
+        if (sessionState.role === 'guest' && sessionState.session?.id) {
+          return
+        }
         if (activePaneId) {
           closePane(activePaneId).catch((err) => {
             console.error('[Shortcuts] Failed to close pane:', err)

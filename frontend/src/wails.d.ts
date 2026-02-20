@@ -91,6 +91,7 @@ declare global {
                     // === Workspaces ===
                     GetWorkspacesWithAgents: () => Promise<WorkspaceWithAgentsDTO[]>;
                     CreateWorkspace: (name: string) => Promise<WorkspaceWithAgentsDTO>;
+                    SyncGuestWorkspace: (name: string) => Promise<WorkspaceWithAgentsDTO>;
                     RenameWorkspace: (id: number, name: string) => Promise<WorkspaceWithAgentsDTO>;
                     SetWorkspaceColor: (id: number, color: string) => Promise<WorkspaceWithAgentsDTO>;
                     DeleteWorkspace: (id: number) => Promise<void>;
@@ -244,6 +245,7 @@ declare global {
                         maxGuests: number,
                         mode: string,
                         allowAnonymous: boolean,
+                        workspaceID: number,
                     ) => Promise<Session>;
                     SessionJoin: (
                         code: string,
@@ -341,4 +343,4 @@ declare global {
     }
 }
 
-export {};
+export { };

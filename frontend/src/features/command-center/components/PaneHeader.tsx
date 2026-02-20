@@ -4,6 +4,7 @@ import { useLayoutStore } from '../stores/layoutStore'
 import { useZenMode } from '../hooks/useZenMode'
 import { useBroadcastStore } from '../../broadcast/stores/broadcastStore'
 import { useWorkspaceStore } from '../../../stores/workspaceStore'
+import { useSessionStore } from '../../session/stores/sessionStore'
 import {
   clearTerminalWorkspaceDragPayload,
   hasTerminalWorkspaceDragPayload,
@@ -47,10 +48,12 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
   const setActivePaneId = useLayoutStore((s) => s.setActivePaneId)
   const { toggleZenMode, isPaneInZenMode } = useZenMode()
   const isBroadcastHighlighted = useBroadcastStore((s) => Boolean(s.highlightedPaneIDs[paneId]))
+  const isGuestScoped = useSessionStore((s) => s.role === 'guest' && Boolean(s.session?.id))
   const [isSwapDropTarget, setIsSwapDropTarget] = useState(false)
 
   const isZen = isPaneInZenMode(paneId)
   const canDragToWorkspace = Boolean(
+    !isGuestScoped &&
     pane &&
     pane.type === 'terminal' &&
     pane.agentDBID &&
@@ -59,16 +62,22 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
 
   const handleKill = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    if (isGuestScoped) {
+      return
+    }
     closePane(paneId).catch((err) => {
       console.error('[PaneHeader] Failed to close pane:', err)
     })
-  }, [closePane, paneId])
+  }, [closePane, isGuestScoped, paneId])
 
   const handleRestart = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    if (isGuestScoped) {
+      return
+    }
     updatePaneStatus(paneId, 'idle')
     // TODO: Reiniciar o processo PTY
-  }, [paneId, updatePaneStatus])
+  }, [isGuestScoped, paneId, updatePaneStatus])
 
   const handleZen = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
@@ -125,6 +134,9 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
   }, [pane, paneId])
 
   const handleSwapDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (isGuestScoped) {
+      return
+    }
     if (!hasTerminalWorkspaceDragPayload(event)) {
       return
     }
@@ -139,7 +151,7 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
     event.stopPropagation()
     event.dataTransfer.dropEffect = 'move'
     setIsSwapDropTarget(true)
-  }, [canSwapWithPayload])
+  }, [canSwapWithPayload, isGuestScoped])
 
   const handleSwapDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!hasTerminalWorkspaceDragPayload(event)) {
@@ -153,6 +165,9 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
   }, [])
 
   const handleSwapDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (isGuestScoped) {
+      return
+    }
     if (!hasTerminalWorkspaceDragPayload(event)) {
       return
     }
@@ -168,7 +183,7 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
     event.stopPropagation()
     swapPanePositions(payload.paneId, paneId)
     setActivePaneId(payload.paneId)
-  }, [canSwapWithPayload, paneId, setActivePaneId, swapPanePositions])
+  }, [canSwapWithPayload, isGuestScoped, paneId, setActivePaneId, swapPanePositions])
 
   /** Ícone do tipo de painel */
   const typeIcon = type === 'terminal' ? '⌘' : type === 'ai_agent' ? '🤖' : '🐙'
@@ -220,6 +235,7 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
           onClick={handleRestart}
           title="Reiniciar"
           aria-label={`Reiniciar ${title}`}
+          disabled={isGuestScoped}
         >
           <RotateCw size={13} />
         </button>
@@ -229,6 +245,7 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
           onClick={handleKill}
           title="Fechar (Cmd+W)"
           aria-label={`Fechar ${title} (Cmd+W)`}
+          disabled={isGuestScoped}
         >
           <Trash2 size={13} />
         </button>

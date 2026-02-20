@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -12,19 +16,24 @@ import (
 
 // SignalingService gerencia a troca de SDP e ICE candidates via WebSocket
 type SignalingService struct {
-	sessionService *Service
-	connections    map[string][]*wsConnection // sessionID → connections
-	sigSessions    map[string]*SignalingSession
-	stunServers    []string
-	turnConfig     *TURNConfig
-	connObserver   func(sessionID, userID string, isHost bool, connected bool)
-	upgrader       websocket.Upgrader
-	mu             sync.RWMutex
+	sessionService  *Service
+	connections     map[string][]*wsConnection // sessionID → connections
+	sigSessions     map[string]*SignalingSession
+	stunServers     []string
+	turnConfig      *TURNConfig
+	connObserver    func(sessionID, userID string, isHost bool, connected bool)
+	sessionObserver func(sessionID string)
+	allowedOrigins  map[string]struct{}
+	allowedHosts    map[string]struct{}
+	allowedSuffixes []string
+	upgrader        websocket.Upgrader
+	mu              sync.RWMutex
 }
 
 // NewSignalingService cria um novo SignalingService
 func NewSignalingService(sessionService *Service) *SignalingService {
-	return &SignalingService{
+	allowedOrigins, allowedHosts, allowedSuffixes := parseAllowedSignalingOrigins(os.Getenv("ORCH_SIGNALING_ALLOWED_ORIGINS"))
+	service := &SignalingService{
 		sessionService: sessionService,
 		connections:    make(map[string][]*wsConnection),
 		sigSessions:    make(map[string]*SignalingSession),
@@ -32,16 +41,137 @@ func NewSignalingService(sessionService *Service) *SignalingService {
 			"stun:stun.l.google.com:19302",
 			"stun:stun1.l.google.com:19302",
 		},
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin:     func(r *http.Request) bool { return true }, // TODO: restringir em produção
-		},
+		allowedOrigins:  allowedOrigins,
+		allowedHosts:    allowedHosts,
+		allowedSuffixes: allowedSuffixes,
+	}
+	service.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     service.isOriginAllowed,
+	}
+	return service
+}
+
+func parseAllowedSignalingOrigins(raw string) (map[string]struct{}, map[string]struct{}, []string) {
+	allowedOrigins := make(map[string]struct{})
+	allowedHosts := make(map[string]struct{})
+	suffixes := make([]string, 0, 4)
+
+	for _, token := range strings.Split(raw, ",") {
+		candidate := strings.TrimSpace(strings.ToLower(token))
+		if candidate == "" {
+			continue
+		}
+
+		if strings.Contains(candidate, "://") {
+			parsed, err := url.Parse(candidate)
+			if err != nil || parsed.Host == "" {
+				continue
+			}
+			origin := strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+			allowedOrigins[origin] = struct{}{}
+			host := strings.ToLower(parsed.Hostname())
+			if host != "" {
+				allowedHosts[host] = struct{}{}
+			}
+			continue
+		}
+
+		if strings.HasPrefix(candidate, "*.") {
+			suffixes = append(suffixes, "."+strings.TrimPrefix(candidate, "*."))
+			continue
+		}
+
+		host := hostOnly(candidate)
+		if host != "" {
+			allowedHosts[host] = struct{}{}
+		}
+	}
+
+	return allowedOrigins, allowedHosts, suffixes
+}
+
+func hostOnly(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil {
+			return strings.ToLower(parsed.Hostname())
+		}
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "]") {
+		trimmed = strings.TrimPrefix(trimmed, "[")
+		trimmed = strings.SplitN(trimmed, "]", 2)[0]
+		return strings.ToLower(trimmed)
+	}
+	host, _, err := net.SplitHostPort(trimmed)
+	if err == nil {
+		return strings.ToLower(host)
+	}
+
+	parsed, err := url.Parse("http://" + trimmed)
+	if err == nil {
+		return strings.ToLower(parsed.Hostname())
+	}
+	return trimmed
+}
+
+func isTrustedLocalSignalingHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	case "wails.localhost":
+		return true
+	default:
+		return strings.HasSuffix(host, ".wails.localhost")
 	}
 }
 
+func (s *SignalingService) isOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Clients não-browser (ou testes) podem não enviar Origin.
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+
+	originHost := strings.ToLower(parsed.Hostname())
+	originKey := strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+	requestHost := hostOnly(r.Host)
+
+	if isTrustedLocalSignalingHost(originHost) {
+		return true
+	}
+	if requestHost != "" && originHost == requestHost {
+		return true
+	}
+	if _, ok := s.allowedOrigins[originKey]; ok {
+		return true
+	}
+	if _, ok := s.allowedHosts[originHost]; ok {
+		return true
+	}
+	for _, suffix := range s.allowedSuffixes {
+		if strings.HasSuffix(originHost, suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // HandleWebSocket trata conexões WebSocket para signaling
-// Endpoint: ws://localhost:PORT/ws/signal?session=SESSION_ID&user=USER_ID&role=host|guest
+// Endpoint: ws(s)://SIGNALING_HOST/ws/signal?session=SESSION_ID&user=USER_ID&role=host|guest
 func (s *SignalingService) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session")
 	userID := r.URL.Query().Get("user")
@@ -186,14 +316,14 @@ func (s *SignalingService) handleMessage(sessionID, userID string, isHost bool, 
 
 		// Atualizar status do guest se necessário
 		if !isHost {
-			if session, err := s.sessionService.GetSession(sessionID); err == nil {
-				for i, g := range session.Guests {
-					if g.UserID == userID {
-						session.mu.Lock()
-						session.Guests[i].Status = GuestConnected
-						session.mu.Unlock()
-						break
-					}
+			if err := s.sessionService.MarkGuestConnected(sessionID, userID); err != nil {
+				log.Printf("[SIGNALING] peer_connected ignored for session=%s user=%s: %v", sessionID, userID, err)
+			} else {
+				s.mu.RLock()
+				observer := s.sessionObserver
+				s.mu.RUnlock()
+				if observer != nil {
+					observer(sessionID)
 				}
 			}
 		}
@@ -342,13 +472,16 @@ func (s *SignalingService) CleanupSession(sessionID string) {
 	delete(s.sigSessions, sessionID)
 }
 
-// StartSignalingServer inicia o servidor WebSocket de sinalização
-// Retorna a porta utilizada
-func (s *SignalingService) StartSignalingServer(port int) error {
+// StartSignalingServerAddr inicia o servidor WebSocket de sinalização num endereço configurável.
+func (s *SignalingService) StartSignalingServerAddr(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("signaling listen addr is empty")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/signal", s.HandleWebSocket)
 
-	addr := fmt.Sprintf(":%d", port)
 	log.Printf("[SIGNALING] Starting signaling server on %s", addr)
 
 	go func() {
@@ -360,11 +493,23 @@ func (s *SignalingService) StartSignalingServer(port int) error {
 	return nil
 }
 
+// StartSignalingServer inicia o servidor WebSocket de sinalização na porta fornecida.
+func (s *SignalingService) StartSignalingServer(port int) error {
+	return s.StartSignalingServerAddr(fmt.Sprintf(":%d", port))
+}
+
 // SetConnectionObserver registra callback para entrada/saída de peers na sessão.
 func (s *SignalingService) SetConnectionObserver(observer func(sessionID, userID string, isHost bool, connected bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.connObserver = observer
+}
+
+// SetSessionObserver registra callback para mudanças de estado da sessão produzidas pelo signaling.
+func (s *SignalingService) SetSessionObserver(observer func(sessionID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionObserver = observer
 }
 
 // NotifyPermissionChange envia alteração de permissão em tempo real para um guest.

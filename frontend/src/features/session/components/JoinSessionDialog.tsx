@@ -111,6 +111,11 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
             <p className="join-dialog__waiting-text">
               Host: <strong>{joinResult.hostName}</strong>
             </p>
+            {joinResult.workspaceName && (
+              <div className="join-dialog__waiting-workspace-alert">
+                <p><strong>"{joinResult.workspaceName}"</strong> será sincronizada após aprovação e conexão com o host.</p>
+              </div>
+            )}
             <p className="join-dialog__waiting-deadline">
               Time remaining: <strong>{Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, '0')}</strong>
             </p>
