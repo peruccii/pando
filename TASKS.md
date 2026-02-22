@@ -254,7 +254,7 @@
 - [x] Criar `internal/session/types.go` com structs `Session`, `SessionConfig`, `SessionGuest`, `GuestRequest`, `SignalMessage`
 - [x] Criar `internal/session/service.go` implementando `ISessionService`
 - [x] Implementar `CreateSession(hostUserID, config)` — criar sessão com código
-- [x] Criar `internal/session/short_code.go` — gerador de Short Codes (`XXX-YY`, charset sem ambíguos)
+- [x] Criar `internal/session/short_code.go` — gerador de Short Codes (`XXXX-XXX`, charset sem ambíguos)
 - [x] Implementar expiração de código (15 min, configurável) e uso único
 - [x] Implementar `JoinSession(code, guestUserID)` — validar código, criar pedido de entrada
 - [x] Implementar `ApproveGuest()` e `RejectGuest()` — controle do Host

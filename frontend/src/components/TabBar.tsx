@@ -1,7 +1,8 @@
-import { FormEvent, KeyboardEvent, DragEvent, CSSProperties, useState, useEffect, useCallback, useRef } from 'react'
+import { FormEvent, KeyboardEvent, DragEvent, CSSProperties, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Plus, X, Pencil, Palette } from 'lucide-react'
 import { useWorkspaceStore } from '../stores/workspaceStore'
 import { useSessionStore } from '../features/session/stores/sessionStore'
+import { useAuthStore } from '../stores/authStore'
 import {
   clearTerminalWorkspaceDragPayload,
   hasTerminalWorkspaceDragPayload,
@@ -19,9 +20,17 @@ const TAB_COLORS = [
   { name: 'Pink', value: '#ec4899' },
   { name: 'Orange', value: '#f97316' },
 ]
+const MAX_VISIBLE_COLLAB_AVATARS = 9
+
+interface SessionParticipant {
+  userID: string
+  name: string
+  avatarUrl?: string
+}
 
 export function TabBar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces)
+  const isSessionWorkspaceScoped = useWorkspaceStore((s) => s.isSessionWorkspaceScoped)
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace)
   const createWorkspace = useWorkspaceStore((s) => s.createWorkspace)
@@ -29,8 +38,10 @@ export function TabBar() {
   const setWorkspaceColor = useWorkspaceStore((s) => s.setWorkspaceColor)
   const deleteWorkspace = useWorkspaceStore((s) => s.deleteWorkspace)
   const moveTerminalToWorkspace = useWorkspaceStore((s) => s.moveTerminalToWorkspace)
+  const session = useSessionStore((s) => s.session)
   const sessionRole = useSessionStore((s) => s.role)
-  const hasCollaborativeSession = useSessionStore((s) => Boolean(s.session?.id))
+  const authUser = useAuthStore((s) => s.user)
+  const hasCollaborativeSession = Boolean(session?.id)
 
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<number | null>(null)
   const [draftName, setDraftName] = useState('')
@@ -47,6 +58,80 @@ export function TabBar() {
 
   const isGuestScoped = sessionRole === 'guest' && hasCollaborativeSession
   const canDeleteWorkspace = !isGuestScoped && workspaces.length > 1
+
+  const scopedWorkspaceID = useMemo(() => {
+    if (!session?.id) {
+      return null
+    }
+
+    if (sessionRole === 'host') {
+      const hostWorkspaceID = Number(session.config?.workspaceID || 0)
+      return Number.isInteger(hostWorkspaceID) && hostWorkspaceID > 0 ? hostWorkspaceID : null
+    }
+
+    if (sessionRole === 'guest' && isSessionWorkspaceScoped && activeWorkspaceId != null) {
+      return activeWorkspaceId
+    }
+
+    return null
+  }, [activeWorkspaceId, isSessionWorkspaceScoped, session?.config?.workspaceID, session?.id, sessionRole])
+
+  const sharedWorkspaceParticipants = useMemo(() => {
+    if (!session?.id || !scopedWorkspaceID) {
+      return [] as SessionParticipant[]
+    }
+
+    const participantsByUserID = new Map<string, SessionParticipant>()
+    const upsertParticipant = (userID: string, name: string, avatarUrl?: string) => {
+      const normalizedUserID = userID.trim()
+      if (!normalizedUserID) {
+        return
+      }
+
+      const normalizedName = name.trim()
+      const normalizedAvatar = avatarUrl?.trim()
+      const existing = participantsByUserID.get(normalizedUserID)
+
+      if (existing) {
+        participantsByUserID.set(normalizedUserID, {
+          userID: existing.userID,
+          name: existing.name || normalizedName || normalizedUserID,
+          avatarUrl: existing.avatarUrl || normalizedAvatar,
+        })
+        return
+      }
+
+      participantsByUserID.set(normalizedUserID, {
+        userID: normalizedUserID,
+        name: normalizedName || normalizedUserID,
+        avatarUrl: normalizedAvatar,
+      })
+    }
+
+    const hostUserID = (session.hostUserID || '').trim()
+    const hostName = (session.hostName || '').trim()
+    const hostAvatar = (session.hostAvatarUrl || '').trim()
+    upsertParticipant(hostUserID, hostName || hostUserID || 'Host', hostAvatar)
+
+    for (const guest of session.guests) {
+      if (guest.status !== 'approved' && guest.status !== 'connected') {
+        continue
+      }
+      upsertParticipant(guest.userID, guest.name, guest.avatarUrl)
+    }
+
+    if (authUser?.id) {
+      upsertParticipant(authUser.id, authUser.name || authUser.id, authUser.avatarUrl)
+    }
+
+    const participants = Array.from(participantsByUserID.values())
+    participants.sort((a, b) => {
+      if (a.userID === hostUserID) return -1
+      if (b.userID === hostUserID) return 1
+      return a.name.localeCompare(b.name)
+    })
+    return participants
+  }, [authUser?.avatarUrl, authUser?.id, authUser?.name, scopedWorkspaceID, session])
 
   const handleCreateWorkspace = async () => {
     if (isGuestScoped) {
@@ -279,6 +364,16 @@ export function TabBar() {
           const activeBorderColor = workspaceColor && workspaceColor.length > 0
             ? workspaceColor
             : 'var(--accent)'
+          const showSessionAvatars =
+            scopedWorkspaceID != null &&
+            workspace.id === scopedWorkspaceID &&
+            sharedWorkspaceParticipants.length > 0
+          const visibleParticipants = showSessionAvatars
+            ? sharedWorkspaceParticipants.slice(0, MAX_VISIBLE_COLLAB_AVATARS)
+            : []
+          const hiddenParticipants = showSessionAvatars
+            ? Math.max(0, sharedWorkspaceParticipants.length - visibleParticipants.length)
+            : 0
 
           if (workspaceColor) {
             tabStyle.borderTopColor = workspaceColor
@@ -341,6 +436,31 @@ export function TabBar() {
                   >
                     {terminalCountLabel}
                   </span>
+                  {showSessionAvatars && (
+                    <div className="tabbar__collab-avatars" aria-label={`${sharedWorkspaceParticipants.length} collaborators in this workspace`}>
+                      {visibleParticipants.map((participant) => (
+                        <span key={participant.userID} className="tabbar__avatar-chip" title={participant.name}>
+                          {participant.avatarUrl ? (
+                            <img
+                              src={participant.avatarUrl}
+                              alt={participant.name}
+                              className="tabbar__avatar"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <span className="tabbar__avatar tabbar__avatar--fallback">
+                              {participant.name.charAt(0).toUpperCase()}
+                            </span>
+                          )}
+                        </span>
+                      ))}
+                      {hiddenParticipants > 0 && (
+                        <span className="tabbar__avatar-overflow" title={`${hiddenParticipants} more collaborators`}>
+                          +{hiddenParticipants}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>

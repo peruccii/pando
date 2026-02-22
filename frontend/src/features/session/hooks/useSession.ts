@@ -5,6 +5,7 @@ import type { Session, GuestRequest, SessionRole } from '../stores/sessionStore'
 import type { ScrollSyncEvent } from '../../scroll-sync/types'
 import { useAuthStore } from '../../../stores/authStore'
 import { useLayoutStore } from '../../command-center/stores/layoutStore'
+import { normalizeSessionCode } from '../sessionCode'
 import {
   useWorkspaceStore,
   type AgentSessionNode,
@@ -332,8 +333,9 @@ interface GuestWorkspaceBinding {
 }
 
 const guestWorkspaceBindingsBySession = new Map<string, GuestWorkspaceBinding>()
-const guestWorkspaceSyncInFlight = new Set<string>()
 const guestWorkspaceResyncRequested = new Set<string>()
+const guestWorkspaceSyncReceived = new Set<string>()
+let nextGuestScopedWorkspaceID = -1
 
 function normalizeWorkspaceName(name: string | undefined, fallbackWorkspaceID: number): string {
   const trimmed = typeof name === 'string' ? name.trim() : ''
@@ -351,6 +353,39 @@ function resolveGuestWorkspaceBinding(sessionID: string, hostWorkspaceID: number
   if (binding.hostWorkspaceID !== hostWorkspaceID) {
     return null
   }
+  return binding
+}
+
+function buildGuestWorkspaceSyncKey(sessionID: string, hostWorkspaceID: number): string {
+  return `${sessionID}:${hostWorkspaceID}`
+}
+
+function ensureGuestWorkspaceBinding(
+  sessionID: string,
+  hostWorkspaceID: number,
+  workspaceName: string,
+): GuestWorkspaceBinding {
+  const existingBinding = resolveGuestWorkspaceBinding(sessionID, hostWorkspaceID)
+  if (existingBinding) {
+    if (existingBinding.workspaceName !== workspaceName) {
+      const updatedBinding: GuestWorkspaceBinding = {
+        ...existingBinding,
+        workspaceName,
+      }
+      guestWorkspaceBindingsBySession.set(sessionID, updatedBinding)
+      return updatedBinding
+    }
+    return existingBinding
+  }
+
+  const binding: GuestWorkspaceBinding = {
+    sessionID,
+    hostWorkspaceID,
+    localWorkspaceID: nextGuestScopedWorkspaceID,
+    workspaceName,
+  }
+  nextGuestScopedWorkspaceID -= 1
+  guestWorkspaceBindingsBySession.set(sessionID, binding)
   return binding
 }
 
@@ -373,15 +408,11 @@ function applyGuestWorkspaceScopeSnapshot(
   workspaceName: string,
   incomingWorkspace?: WorkspaceNode,
 ) {
-  const binding = resolveGuestWorkspaceBinding(sessionID, hostWorkspaceID)
-  const scopedWorkspaceID = binding?.localWorkspaceID || hostWorkspaceID
+  const binding = ensureGuestWorkspaceBinding(sessionID, hostWorkspaceID, workspaceName)
+  const scopedWorkspaceID = binding.localWorkspaceID
   const workspaceState = useWorkspaceStore.getState()
   const localWorkspace = workspaceState.workspaces.find((workspace) => workspace.id === scopedWorkspaceID)
-  const hostWorkspace = scopedWorkspaceID !== hostWorkspaceID
-    ? workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
-    : undefined
-  const existingWorkspace = pickWorkspaceSnapshot(hostWorkspace, localWorkspace)
-  const snapshotWorkspace = pickWorkspaceSnapshot(incomingWorkspace, existingWorkspace)
+  const snapshotWorkspace = pickWorkspaceSnapshot(incomingWorkspace, localWorkspace)
 
   const mappedAgents = (snapshotWorkspace?.agents ?? []).map((agent) => ({
     ...agent,
@@ -406,49 +437,7 @@ function applyGuestWorkspaceScopeSnapshot(
 }
 
 function syncGuestWorkspaceRecord(sessionID: string, hostWorkspaceID: number, workspaceName: string) {
-  if (!window.go?.main?.App?.SyncGuestWorkspace) {
-    return
-  }
-
-  const existingBinding = resolveGuestWorkspaceBinding(sessionID, hostWorkspaceID)
-  if (existingBinding && existingBinding.workspaceName === workspaceName) {
-    return
-  }
-
-  const syncKey = `${sessionID}:${hostWorkspaceID}:${workspaceName.toLowerCase()}`
-  if (guestWorkspaceSyncInFlight.has(syncKey)) {
-    return
-  }
-
-  guestWorkspaceSyncInFlight.add(syncKey)
-  window.go.main.App.SyncGuestWorkspace(workspaceName)
-    .then((workspace) => {
-      const localWorkspaceID = Number(workspace?.id || 0)
-      if (!Number.isInteger(localWorkspaceID) || localWorkspaceID <= 0) {
-        return
-      }
-
-      guestWorkspaceBindingsBySession.set(sessionID, {
-        sessionID,
-        hostWorkspaceID,
-        localWorkspaceID,
-        workspaceName,
-      })
-
-      const workspaceState = useWorkspaceStore.getState()
-      const hostSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
-      const localSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === localWorkspaceID)
-      const preservedSnapshot = pickWorkspaceSnapshot(hostSnapshot, localSnapshot)
-      if (preservedSnapshot && preservedSnapshot.agents.length > 0) {
-        applyGuestWorkspaceScopeSnapshot(sessionID, hostWorkspaceID, workspaceName, preservedSnapshot)
-      }
-    })
-    .catch((err) => {
-      console.warn('[Session] Failed to sync shared workspace to local db:', err)
-    })
-    .finally(() => {
-      guestWorkspaceSyncInFlight.delete(syncKey)
-    })
+  ensureGuestWorkspaceBinding(sessionID, hostWorkspaceID, workspaceName)
 }
 
 function ensureGuestWorkspaceScope(sessionData: Session | null | undefined) {
@@ -462,34 +451,40 @@ function ensureGuestWorkspaceScope(sessionData: Session | null | undefined) {
   }
 
   const workspaceName = normalizeWorkspaceName(sessionData.config.workspaceName, hostWorkspaceID)
+  syncGuestWorkspaceRecord(sessionData.id, hostWorkspaceID, workspaceName)
   const binding = resolveGuestWorkspaceBinding(sessionData.id, hostWorkspaceID)
   const workspaceState = useWorkspaceStore.getState()
   const localSnapshot = binding
     ? workspaceState.workspaces.find((workspace) => workspace.id === binding.localWorkspaceID)
     : undefined
-  const hostSnapshot = workspaceState.workspaces.find((workspace) => workspace.id === hostWorkspaceID)
-  const preservedSnapshot = pickWorkspaceSnapshot(localSnapshot, hostSnapshot)
-  if (preservedSnapshot && preservedSnapshot.agents.length > 0) {
-    applyGuestWorkspaceScopeSnapshot(sessionData.id, hostWorkspaceID, workspaceName, preservedSnapshot)
-  }
-  syncGuestWorkspaceRecord(sessionData.id, hostWorkspaceID, workspaceName)
+  const preservedSnapshot = pickWorkspaceSnapshot(localSnapshot)
+  applyGuestWorkspaceScopeSnapshot(sessionData.id, hostWorkspaceID, workspaceName, preservedSnapshot)
 }
 
 function requestGuestWorkspaceScopeSync(sessionID: string, workspaceID: number) {
+  if (!Number.isInteger(workspaceID) || workspaceID <= 0) {
+    return
+  }
+
   const hasHydratedScope = () => {
+    const syncKey = buildGuestWorkspaceSyncKey(sessionID, workspaceID)
+    if (!guestWorkspaceSyncReceived.has(syncKey)) {
+      return false
+    }
+
     const workspaceState = useWorkspaceStore.getState()
     const binding = resolveGuestWorkspaceBinding(sessionID, workspaceID)
-    const hydratedLocal = binding
-      ? workspaceState.workspaces.find((workspace) => workspace.id === binding.localWorkspaceID)
-      : undefined
-    const hydratedHost = workspaceState.workspaces.find((workspace) => workspace.id === workspaceID)
+    if (!binding) {
+      return false
+    }
+
+    const hydratedWorkspace = workspaceState.workspaces.find(
+      (workspace) => workspace.id === binding.localWorkspaceID,
+    )
 
     return Boolean(
       workspaceState.isSessionWorkspaceScoped &&
-      (
-        (hydratedLocal && hydratedLocal.agents.length > 0) ||
-        (hydratedHost && hydratedHost.agents.length > 0)
-      ),
+      hydratedWorkspace,
     )
   }
 
@@ -506,13 +501,17 @@ function requestGuestWorkspaceScopeSync(sessionID: string, workspaceID: number) 
     runtimeState.p2p.sendControlMessage('workspace_scope_request', { workspaceID })
   }
 
+  // Sempre dispara um pequeno burst inicial para reduzir janela de corrida de handshake/channel.
   sendRequest()
 
-  // Retries defensivos para casos em que o canal de controle abre após o estado "connected".
+  // Retries defensivos para casos em que o canal de controle abre após "connected"
+  // ou quando o primeiro snapshot chega parcial.
   const retryDelaysMs = [300, 700, 1200, 2000, 3200, 5000]
-  retryDelaysMs.forEach((delay) => {
+  retryDelaysMs.forEach((delay, index) => {
     window.setTimeout(() => {
-      if (hasHydratedScope()) {
+      // Força os primeiros retries mesmo após sync inicial para convergir estado.
+      const shouldForceRetry = index < 2
+      if (!shouldForceRetry && hasHydratedScope()) {
         return
       }
       sendRequest()
@@ -524,6 +523,7 @@ function applyGuestWorkspaceScopeSync(sessionID: string, payload: WorkspaceScope
   if (!sessionID) {
     return
   }
+  guestWorkspaceSyncReceived.add(buildGuestWorkspaceSyncKey(sessionID, payload.workspaceID))
   const workspaceName = normalizeWorkspaceName(payload.workspace.name, payload.workspaceID)
   applyGuestWorkspaceScopeSnapshot(sessionID, payload.workspaceID, workspaceName, payload.workspace)
   syncGuestWorkspaceRecord(sessionID, payload.workspaceID, workspaceName)
@@ -536,18 +536,24 @@ function applyGuestWorkspaceScopeSync(sessionID: string, payload: WorkspaceScope
     runtimeState.p2pSessionID === sessionID
   ) {
     guestWorkspaceResyncRequested.add(sessionID)
-    window.setTimeout(() => {
-      if (
-        !runtimeState.p2p ||
-        !runtimeState.p2p.isConnected ||
-        runtimeState.p2pIsHost ||
-        runtimeState.p2pSessionID !== sessionID
-      ) {
-        return
-      }
-      const workspaceID = Number(useSessionStore.getState().session?.config?.workspaceID || payload.workspaceID || 0)
-      runtimeState.p2p.sendControlMessage('workspace_scope_request', { workspaceID })
-    }, 350)
+    const followUpDelaysMs = [350, 900, 1700]
+    followUpDelaysMs.forEach((delay) => {
+      window.setTimeout(() => {
+        if (
+          !runtimeState.p2p ||
+          !runtimeState.p2p.isConnected ||
+          runtimeState.p2pIsHost ||
+          runtimeState.p2pSessionID !== sessionID
+        ) {
+          return
+        }
+        const workspaceID = Number(useSessionStore.getState().session?.config?.workspaceID || payload.workspaceID || 0)
+        if (!Number.isInteger(workspaceID) || workspaceID <= 0) {
+          return
+        }
+        runtimeState.p2p.sendControlMessage('workspace_scope_request', { workspaceID })
+      }, delay)
+    })
   }
 }
 
@@ -555,9 +561,9 @@ function clearGuestWorkspaceScope(sessionID?: string) {
   if (sessionID) {
     guestWorkspaceBindingsBySession.delete(sessionID)
     guestWorkspaceResyncRequested.delete(sessionID)
-    for (const key of Array.from(guestWorkspaceSyncInFlight)) {
+    for (const key of Array.from(guestWorkspaceSyncReceived)) {
       if (key.startsWith(`${sessionID}:`)) {
-        guestWorkspaceSyncInFlight.delete(key)
+        guestWorkspaceSyncReceived.delete(key)
       }
     }
   }
@@ -638,14 +644,6 @@ function isTerminalSessionInWorkspaceScope(sessionID: string, workspaceID: numbe
   }
 
   return scopedWorkspace.agents.some((agent) => agent.sessionId === sessionID)
-}
-
-function normalizeSessionCode(code: string): string {
-  const cleaned = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
-  if (cleaned.length <= 3) {
-    return cleaned
-  }
-  return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 5)}`
 }
 
 function resolveApprovalDeadline(approvalExpiresAt?: string): number {
@@ -950,6 +948,15 @@ export function useSession() {
     return 'anonymous'
   }, [authUser?.id, store.activeGuestUserID, store.joinResult?.guestUserID, store.role, store.session?.hostUserID])
 
+  const ensureGitHubCollabAuth = useCallback(() => {
+    const currentUser = useAuthStore.getState().user
+    if (!currentUser?.id || currentUser.provider !== 'github') {
+      const message = 'Sessões colaborativas exigem autenticação com GitHub.'
+      store.setError(message)
+      throw new Error(message)
+    }
+  }, [store])
+
   // Inicializa listeners globais de sessão apenas uma vez por app.
   useEffect(() => {
     runtimeState.listenerConsumers += 1
@@ -993,10 +1000,16 @@ export function useSession() {
   }, [currentUserID, store.activeGuestUserID, store.joinResult?.guestUserID, store.role, store.session?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (store.role === 'guest' && store.session && store.isP2PConnected) {
-      ensureGuestWorkspaceScope(store.session)
+    if (store.role !== 'guest' || !store.session) {
+      return
     }
-  }, [store.isP2PConnected, store.role, store.session])
+    ensureGuestWorkspaceScope(store.session)
+  }, [
+    store.role,
+    store.session?.id,
+    store.session?.config?.workspaceID,
+    store.session?.config?.workspaceName,
+  ])
 
   useEffect(() => {
     if (store.role !== 'host' || !store.session?.id || !store.isP2PConnected) {
@@ -1160,6 +1173,7 @@ export function useSession() {
   /** Cria uma nova sessão como Host */
   const createSession = useCallback(
     async (opts?: { maxGuests?: number; mode?: string; allowAnonymous?: boolean; workspaceID?: number }) => {
+      ensureGitHubCollabAuth()
       store.setLoading(true)
       store.setError(null)
 
@@ -1208,7 +1222,7 @@ export function useSession() {
         store.setLoading(false)
       }
     },
-    [store]
+    [ensureGitHubCollabAuth, store]
   )
 
   /** Aprova um guest na sessão */
@@ -1259,6 +1273,51 @@ export function useSession() {
       destroyRuntimeP2P()
       store.reset()
       setAuditLogs([])
+    } catch (err) {
+      store.setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [store])
+
+  /** Regenera o código de convite */
+  const regenerateCode = useCallback(async () => {
+    if (!store.session) return
+
+    try {
+      const updated = await window.go!.main.App.SessionRegenerateCode(store.session.id)
+      if (updated) {
+        store.setSession(updated)
+      }
+      await loadAuditLogs(store.session.id)
+    } catch (err) {
+      store.setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [store])
+
+  /** Revoga o código de convite atual */
+  const revokeCode = useCallback(async () => {
+    if (!store.session) return
+
+    try {
+      const updated = await window.go!.main.App.SessionRevokeCode(store.session.id)
+      if (updated) {
+        store.setSession(updated)
+      }
+      await loadAuditLogs(store.session.id)
+    } catch (err) {
+      store.setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [store])
+
+  /** Liga/desliga aceitação de novos joins */
+  const setAllowNewJoins = useCallback(async (allow: boolean) => {
+    if (!store.session) return
+
+    try {
+      const updated = await window.go!.main.App.SessionSetAllowNewJoins(store.session.id, allow)
+      if (updated) {
+        store.setSession(updated)
+      }
+      await loadAuditLogs(store.session.id)
     } catch (err) {
       store.setError(err instanceof Error ? err.message : String(err))
     }
@@ -1383,6 +1442,7 @@ export function useSession() {
   /** Entra numa sessão como Guest usando o código */
   const joinSession = useCallback(
     async (code: string, name?: string, email?: string) => {
+      ensureGitHubCollabAuth()
       store.setLoading(true)
       store.setError(null)
 
@@ -1413,7 +1473,7 @@ export function useSession() {
         store.setLoading(false)
       }
     },
-    [store]
+    [ensureGitHubCollabAuth, store]
   )
 
   /** Cancela uma tentativa de join */
@@ -1503,6 +1563,20 @@ export function useSession() {
             return
           }
           syncScopedWorkspaceToGuests(requesterUserID)
+          const followUpDelaysMs = [260, 760]
+          followUpDelaysMs.forEach((delay) => {
+            window.setTimeout(() => {
+              if (
+                !runtimeState.p2p ||
+                !runtimeState.p2p.isConnected ||
+                !runtimeState.p2pIsHost ||
+                runtimeState.p2pSessionID !== sessionID
+              ) {
+                return
+              }
+              syncScopedWorkspaceToGuests(requesterUserID)
+            }, delay)
+          })
           return
         }
 
@@ -1723,6 +1797,9 @@ export function useSession() {
     approveGuest,
     rejectGuest,
     endSession,
+    regenerateCode,
+    revokeCode,
+    setAllowNewJoins,
     setGuestPermission,
     kickGuest,
     restartEnvironment,

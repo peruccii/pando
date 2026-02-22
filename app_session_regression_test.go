@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"orch/internal/auth"
 	"orch/internal/database"
 	"orch/internal/session"
 
@@ -42,6 +43,14 @@ func newSessionHostAppWithDB(t *testing.T) (*App, *database.Service) {
 
 	app := NewApp()
 	app.db = db
+	app.auth = auth.NewService(db)
+	app.auth.SetCurrentUserForTesting(&auth.User{
+		ID:        "host-regression",
+		Email:     "host-regression@example.com",
+		Name:      "Host Regression",
+		AvatarURL: "https://avatars.githubusercontent.com/u/1?v=4",
+		Provider:  "github",
+	})
 	app.session = session.NewService(nil)
 	app.sessionGatewayOwner = true
 	return app, db
@@ -80,6 +89,14 @@ func TestSessionRegression_TwoInstances_CreateJoinApproveRestartRestoreRejoin(t 
 	}
 
 	guest := NewApp()
+	guest.auth = auth.NewService(nil)
+	guest.auth.SetCurrentUserForTesting(&auth.User{
+		ID:        "guest-regression",
+		Email:     "guest-regression@example.com",
+		Name:      "Guest QA",
+		AvatarURL: "https://avatars.githubusercontent.com/u/2?v=4",
+		Provider:  "github",
+	})
 	guest.sessionGatewayOwner = false
 	guest.sessionGatewayURL = gatewayURL
 	guest.session = nil

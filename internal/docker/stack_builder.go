@@ -215,18 +215,31 @@ func (s *Service) BuildStackImage(ctx context.Context, cfg StackConfig, logFn fu
 	}()
 
 	if err := cmd.Wait(); err != nil {
-		logFn(fmt.Sprintf("❌ Erro no build: %v", err))
-		return fmt.Errorf("docker build falhou: %w", err)
+		logFn(fmt.Sprintf("Error: build failed: %v", err))
+		return fmt.Errorf("docker build failed: %w", err)
 	}
 
-	logFn("✅ Build concluído com sucesso!")
-	logFn(fmt.Sprintf("Imagem criada: %s", imageTag))
+	// 4.1 Verificar tamanho final da imagem
+	sizeCmd := exec.Command("docker", "image", "inspect", "--format={{.Size}}", imageTag)
+	if sizeBytes, err := sizeCmd.Output(); err == nil {
+		var size int64
+		if _, scanErr := fmt.Sscanf(string(sizeBytes), "%d", &size); scanErr == nil {
+			humanSize := fmt.Sprintf("%.1f MB", float64(size)/1024/1024)
+			if size > 1024*1024*1024 {
+				humanSize = fmt.Sprintf("%.2f GB", float64(size)/1024/1024/1024)
+			}
+			logFn(fmt.Sprintf("Final image size: %s", humanSize))
+		}
+	}
+
+	logFn("Build completed successfully!")
+	logFn(fmt.Sprintf("Image created: %s", imageTag))
 
 	// 5. Salvar configuração para persistência
 	if err := s.saveStackConfig(cfg); err != nil {
-		logFn(fmt.Sprintf("⚠️ Aviso: Falha ao salvar configuração: %v", err))
+		logFn(fmt.Sprintf("Warning: Failed to save config: %v", err))
 	} else {
-		logFn("💾 Configuração salva com sucesso.")
+		logFn("Configuration saved successfully.")
 	}
 
 	return nil

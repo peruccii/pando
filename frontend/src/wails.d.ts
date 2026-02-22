@@ -273,6 +273,16 @@ declare global {
                         sessionID: string,
                         guestUserID: string,
                     ) => Promise<void>;
+                    SessionRegenerateCode: (
+                        sessionID: string,
+                    ) => Promise<Session>;
+                    SessionRevokeCode: (
+                        sessionID: string,
+                    ) => Promise<Session>;
+                    SessionSetAllowNewJoins: (
+                        sessionID: string,
+                        allow: boolean,
+                    ) => Promise<Session>;
                     SessionGetActive: () => Promise<Session | null>;
                     SessionGetSession: (
                         sessionID: string,

@@ -195,13 +195,13 @@ func (s *SignalingService) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		isHost:    role == "host",
 	}
 
+	// Garantir que existe um SignalingSession antes de registrar a conexão.
+	s.ensureSignalingSession(sessionID)
 	s.registerConnection(sessionID, wsConn)
 	defer s.unregisterConnection(sessionID, wsConn)
 
 	log.Printf("[SIGNALING] %s connected to session %s (role: %s)", userID, sessionID, role)
-
-	// Garantir que existe um SignalingSession
-	s.ensureSignalingSession(sessionID)
+	s.replayPendingOfferForGuest(sessionID, wsConn)
 
 	for {
 		_, rawMsg, err := conn.ReadMessage()
@@ -248,6 +248,10 @@ func (s *SignalingService) handleMessage(sessionID, userID string, isHost bool, 
 
 		// Se há um guest aprovado esperando, enviar o offer
 		if msg.TargetUserID != "" {
+			if sigSession.HostOffers == nil {
+				sigSession.HostOffers = make(map[string]string)
+			}
+			sigSession.HostOffers[msg.TargetUserID] = msg.Payload
 			s.sendToUser(sessionID, msg.TargetUserID, SignalMessage{
 				Type:       "sdp_offer",
 				Payload:    msg.Payload,
@@ -258,6 +262,9 @@ func (s *SignalingService) handleMessage(sessionID, userID string, isHost bool, 
 	case "sdp_answer":
 		// Guest envia SDP Answer
 		sigSession.GuestSDPs[userID] = msg.Payload
+		if sigSession.HostOffers != nil {
+			delete(sigSession.HostOffers, userID)
+		}
 		log.Printf("[SIGNALING] Stored SDP answer from guest %s", userID)
 
 		// Enviar para o Host
@@ -405,10 +412,46 @@ func (s *SignalingService) ensureSignalingSession(sessionID string) {
 	if _, ok := s.sigSessions[sessionID]; !ok {
 		s.sigSessions[sessionID] = &SignalingSession{
 			SessionID:     sessionID,
+			HostOffers:    make(map[string]string),
 			GuestSDPs:     make(map[string]string),
 			ICECandidates: make(map[string][]string),
 		}
 	}
+}
+
+func (s *SignalingService) replayPendingOfferForGuest(sessionID string, conn *wsConnection) {
+	if conn == nil || conn.isHost {
+		return
+	}
+
+	var pendingOffer string
+	hostUserID := "host"
+
+	s.mu.RLock()
+	sigSession := s.sigSessions[sessionID]
+	if sigSession != nil && sigSession.HostOffers != nil {
+		pendingOffer = strings.TrimSpace(sigSession.HostOffers[conn.userID])
+	}
+	for _, current := range s.connections[sessionID] {
+		if current.isHost {
+			hostUserID = current.userID
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if pendingOffer == "" {
+		return
+	}
+
+	s.writeJSON(conn, SignalMessage{
+		Type:         "sdp_offer",
+		Payload:      pendingOffer,
+		TargetUserID: conn.userID,
+		FromUserID:   hostUserID,
+		SessionID:    sessionID,
+	})
+	log.Printf("[SIGNALING] Replayed pending SDP offer to guest %s for session %s", conn.userID, sessionID)
 }
 
 // sendToHost envia uma mensagem para o Host de uma sessão

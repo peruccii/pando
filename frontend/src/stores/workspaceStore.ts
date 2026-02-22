@@ -832,7 +832,12 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
         isActive: true,
       }
 
-      const scopedSet = [scopedWorkspace]
+      const currentWorkspaces = normalizeWorkspaceNodes(get().workspaces)
+      const scopedIndex = currentWorkspaces.findIndex((item) => item.id === scopedWorkspace.id)
+      const scopedSet = scopedIndex >= 0
+        ? currentWorkspaces.map((item) => (item.id === scopedWorkspace.id ? scopedWorkspace : item))
+        : [...currentWorkspaces, scopedWorkspace]
+
       set({
         workspaces: scopedSet,
         activeWorkspaceId: scopedWorkspace.id,

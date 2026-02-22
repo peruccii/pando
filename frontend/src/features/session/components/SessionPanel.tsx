@@ -4,6 +4,9 @@ import {
   Play,
   ScrollText,
   RefreshCw,
+  RotateCcw,
+  ChevronDown,
+  ChevronUp,
   X,
   Copy,
   User,
@@ -47,20 +50,24 @@ export function SessionPanel() {
     rejectGuest,
     setGuestPermission,
     kickGuest,
+    regenerateCode,
+    revokeCode,
+    setAllowNewJoins,
     restartEnvironment,
     loadAuditLogs,
   } = useSession()
 
   const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [showAdvancedCreate, setShowAdvancedCreate] = useState(false)
   const [showAuditLogs, setShowAuditLogs] = useState(false)
   const [permissionPrompt, setPermissionPrompt] = useState<PermissionPromptState | null>(null)
+  const [isCodeActionLoading, setIsCodeActionLoading] = useState(false)
   const workspaces = useWorkspaceStore((s) => s.workspaces)
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
 
   const [createOpts, setCreateOpts] = useState({
     maxGuests: 10,
     mode: 'liveshare' as 'liveshare' | 'docker',
-    allowAnonymous: false,
     workspaceID: activeWorkspaceId ?? 0,
   })
 
@@ -95,6 +102,15 @@ export function SessionPanel() {
     return role === 'host' && session?.mode === 'docker'
   }, [role, session?.mode])
 
+  const inviteIsOpen = Boolean(session?.allowNewJoins && session?.code)
+  const inviteStatusLabel = inviteIsOpen ? 'OPEN' : 'PAUSED'
+  const inviteExpiryMinutes = useMemo(() => {
+    if (!session?.expiresAt) {
+      return 0
+    }
+    return Math.max(0, Math.ceil((new Date(session.expiresAt).getTime() - Date.now()) / 60000))
+  }, [session?.expiresAt])
+
   const headerTitle = useMemo(() => {
     if (role === 'host') return 'Hosting Session'
     if (isWaitingApproval) return 'Waiting Approval'
@@ -105,14 +121,45 @@ export function SessionPanel() {
     try {
       await createSession(createOpts)
       setShowCreateDialog(false)
+      setShowAdvancedCreate(false)
     } catch {
       // error is set in store
     }
   }
 
   const handleCopyCode = () => {
-    if (session?.code) {
+    if (session?.code && session.allowNewJoins) {
       navigator.clipboard.writeText(session.code)
+    }
+  }
+
+  const handleRegenerateCode = async () => {
+    if (!session || isCodeActionLoading) return
+    setIsCodeActionLoading(true)
+    try {
+      await regenerateCode()
+    } finally {
+      setIsCodeActionLoading(false)
+    }
+  }
+
+  const handleRevokeCode = async () => {
+    if (!session || isCodeActionLoading) return
+    setIsCodeActionLoading(true)
+    try {
+      await revokeCode()
+    } finally {
+      setIsCodeActionLoading(false)
+    }
+  }
+
+  const handleToggleAllowNewJoins = async (allow: boolean) => {
+    if (!session || isCodeActionLoading) return
+    setIsCodeActionLoading(true)
+    try {
+      await setAllowNewJoins(allow)
+    } finally {
+      setIsCodeActionLoading(false)
     }
   }
 
@@ -156,7 +203,10 @@ export function SessionPanel() {
         {!showCreateDialog ? (
           <button
             className="btn btn--primary session-panel__create-btn"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={() => {
+              setShowAdvancedCreate(false)
+              setShowCreateDialog(true)
+            }}
             aria-label="Start collaboration session (Cmd+Shift+S)"
           >
             <Play size={14} fill="currentColor" />
@@ -164,37 +214,6 @@ export function SessionPanel() {
           </button>
         ) : (
           <div className="session-panel__create-form animate-fade-in-up">
-            <div className="session-panel__form-group">
-              <label className="session-panel__label">Max Guests</label>
-              <input
-                type="number"
-                className="input"
-                value={createOpts.maxGuests}
-                onChange={(e) =>
-                  setCreateOpts((prev) => ({ ...prev, maxGuests: parseInt(e.target.value, 10) || 10 }))
-                }
-                min={1}
-                max={10}
-              />
-            </div>
-
-            <div className="session-panel__form-group">
-              <label className="session-panel__label">Mode</label>
-              <select
-                className="input"
-                value={createOpts.mode}
-                onChange={(e) =>
-                  setCreateOpts((prev) => ({
-                    ...prev,
-                    mode: e.target.value as 'liveshare' | 'docker',
-                  }))
-                }
-              >
-                <option value="liveshare">Live Share</option>
-                <option value="docker">Docker (Sandboxed)</option>
-              </select>
-            </div>
-
             <div className="session-panel__form-group">
               <label className="session-panel__label">Workspace</label>
               <select
@@ -215,21 +234,59 @@ export function SessionPanel() {
               </select>
             </div>
 
-            <div className="session-panel__form-group session-panel__form-group--row">
-              <label className="session-panel__label">
-                <input
-                  type="checkbox"
-                  checked={createOpts.allowAnonymous}
-                  onChange={(e) =>
-                    setCreateOpts((prev) => ({ ...prev, allowAnonymous: e.target.checked }))
-                  }
-                />
-                Allow anonymous guests
-              </label>
-            </div>
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm session-panel__advanced-toggle"
+              onClick={() => setShowAdvancedCreate((current) => !current)}
+            >
+              {showAdvancedCreate ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              {showAdvancedCreate ? 'Hide advanced options' : 'Advanced options'}
+            </button>
+
+            {showAdvancedCreate && (
+              <div className="session-panel__advanced-grid animate-fade-in-up">
+                <div className="session-panel__form-group">
+                  <label className="session-panel__label">Max Guests</label>
+                  <input
+                    type="number"
+                    className="input"
+                    value={createOpts.maxGuests}
+                    onChange={(e) =>
+                      setCreateOpts((prev) => ({ ...prev, maxGuests: parseInt(e.target.value, 10) || 10 }))
+                    }
+                    min={1}
+                    max={10}
+                  />
+                </div>
+
+                <div className="session-panel__form-group">
+                  <label className="session-panel__label">Mode</label>
+                  <select
+                    className="input"
+                    value={createOpts.mode}
+                    onChange={(e) =>
+                      setCreateOpts((prev) => ({
+                        ...prev,
+                        mode: e.target.value as 'liveshare' | 'docker',
+                      }))
+                    }
+                  >
+                    <option value="liveshare">Live Share</option>
+                    <option value="docker">Docker (Sandboxed)</option>
+                  </select>
+                </div>
+
+              </div>
+            )}
 
             <div className="session-panel__form-actions">
-              <button className="btn btn--ghost" onClick={() => setShowCreateDialog(false)}>
+              <button
+                className="btn btn--ghost"
+                onClick={() => {
+                  setShowCreateDialog(false)
+                  setShowAdvancedCreate(false)
+                }}
+              >
                 Cancel
               </button>
               <button
@@ -306,16 +363,62 @@ export function SessionPanel() {
       )}
 
       {/* Código de convite */}
-      {session && role === 'host' && session.status === 'waiting' && (
-        <div className="session-panel__code-section animate-fade-in-up">
-          <p className="session-panel__code-label">Share this code with your collaborators:</p>
-          <div className="session-panel__code-display" onClick={handleCopyCode} title="Click to copy">
-            <span className="session-panel__code">{session.code}</span>
-            <Copy size={16} className="session-panel__code-copy" />
+      {session && role === 'host' && (
+        <div className="session-panel__code-section session-panel__invite-control animate-fade-in-up">
+          <div className="session-panel__invite-head">
+            <p className="session-panel__code-label">Invite Control</p>
+            <span
+              className={`session-panel__invite-status ${inviteIsOpen ? 'session-panel__invite-status--open' : 'session-panel__invite-status--paused'}`}
+            >
+              {inviteStatusLabel}
+            </span>
           </div>
+
+          {inviteIsOpen ? (
+            <div className="session-panel__code-display" onClick={handleCopyCode} title="Click to copy">
+              <span className="session-panel__code">{session.code}</span>
+              <Copy size={16} className="session-panel__code-copy" />
+            </div>
+          ) : (
+            <div className="session-panel__invite-paused">
+              Invites are currently paused. Connected guests keep access.
+            </div>
+          )}
+
           <p className="session-panel__code-expiry">
-            Expires in {Math.max(0, Math.ceil((new Date(session.expiresAt).getTime() - Date.now()) / 60000))} min
+            {inviteIsOpen ? `Code expires in ${inviteExpiryMinutes} min` : 'No active invite code'}
           </p>
+
+          <div className="session-panel__code-controls session-panel__invite-actions">
+            <button
+              className="btn btn--primary btn--sm"
+              onClick={handleCopyCode}
+              disabled={isCodeActionLoading || isLoading || !inviteIsOpen}
+            >
+              <Copy size={12} /> Copy code
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={handleRegenerateCode}
+              disabled={isCodeActionLoading || isLoading}
+            >
+              <RotateCcw size={12} /> Regenerate
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={() => handleToggleAllowNewJoins(!session.allowNewJoins)}
+              disabled={isCodeActionLoading || isLoading}
+            >
+              {session.allowNewJoins ? 'Pause invites' : 'Enable invites'}
+            </button>
+            <button
+              className="btn btn--ghost btn--sm"
+              onClick={handleRevokeCode}
+              disabled={isCodeActionLoading || isLoading || !session.code}
+            >
+              <X size={12} /> Revoke
+            </button>
+          </div>
         </div>
       )}
 

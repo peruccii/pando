@@ -10,15 +10,23 @@ import (
 // charset sem caracteres ambíguos (sem 0/O/1/I/L)
 const shortCodeCharset = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
-// generateShortCode gera um código curto no formato XXX-YY
+const (
+	shortCodePart1Len = 4
+	shortCodePart2Len = 3
+
+	legacyShortCodePart1Len = 3
+	legacyShortCodePart2Len = 2
+)
+
+// generateShortCode gera um código curto no formato XXXX-XXX.
 // Fácil de ditar por voz, case-insensitive
 func generateShortCode() (string, error) {
-	part1, err := randomString(3)
+	part1, err := randomString(shortCodePart1Len)
 	if err != nil {
 		return "", fmt.Errorf("generating short code part1: %w", err)
 	}
 
-	part2, err := randomString(2)
+	part2, err := randomString(shortCodePart2Len)
 	if err != nil {
 		return "", fmt.Errorf("generating short code part2: %w", err)
 	}
@@ -47,19 +55,31 @@ func normalizeCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
 
-// validateCodeFormat verifica se o código tem o formato XXX-YY
+// validateCodeFormat verifica se o código tem formato suportado.
+// Formato atual: XXXX-XXX
+// Formato legado aceito: XXX-YY (evita quebra em sessões restauradas)
 func validateCodeFormat(code string) bool {
 	normalized := normalizeCode(code)
-	if len(normalized) != 6 {
+
+	if matchesCodeFormat(normalized, shortCodePart1Len, shortCodePart2Len) {
+		return true
+	}
+
+	return matchesCodeFormat(normalized, legacyShortCodePart1Len, legacyShortCodePart2Len)
+}
+
+func matchesCodeFormat(code string, part1Len int, part2Len int) bool {
+	expectedLen := part1Len + 1 + part2Len
+	if len(code) != expectedLen {
 		return false
 	}
-	if normalized[3] != '-' {
+	if code[part1Len] != '-' {
 		return false
 	}
 
 	// Verificar se cada caractere está no charset
-	for i, c := range normalized {
-		if i == 3 {
+	for i, c := range code {
+		if i == part1Len {
 			continue // pular o hífen
 		}
 		if !strings.ContainsRune(shortCodeCharset, c) {

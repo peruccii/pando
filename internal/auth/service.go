@@ -436,6 +436,11 @@ func (s *Service) GetCurrentUser() (*User, error) {
 	return user, nil
 }
 
+// SetCurrentUserForTesting injeta um usuário autenticado em memória para testes.
+func (s *Service) SetCurrentUserForTesting(user *User) {
+	s.currentUser = user
+}
+
 // fetchUserProfile busca o perfil do usuário no Supabase
 func (s *Service) fetchUserProfile(accessToken string) (*User, error) {
 	req, err := http.NewRequest("GET", supabaseURL+"/auth/v1/user", nil)

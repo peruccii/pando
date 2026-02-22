@@ -13,6 +13,8 @@ import * as App from "../../wailsjs/go/main/App";
 import { useStackBuildStore } from "../stores/stackBuildStore";
 import "./StackBuilder.css";
 
+import { Shimmer } from "./ui/Shimmer";
+
 interface Tool {
     id: string;
     name: string;
@@ -20,13 +22,16 @@ interface Tool {
     supportedVersions?: string[];
     category: "essential" | "language" | "tool";
     isLocked?: boolean;
+    estimatedSize?: number; // MB
 }
+
+const BASE_IMAGE_SIZE = 80; // MB (debian:bookworm-slim)
 
 const AVAILABLE_TOOLS: Tool[] = [
     // Essenciais
-    { id: "git", name: "Git", category: "essential", isLocked: true },
-    { id: "curl", name: "Curl", category: "essential", isLocked: true },
-    { id: "wget", name: "Wget", category: "essential", isLocked: true },
+    { id: "git", name: "Git", category: "essential", isLocked: true, estimatedSize: 20 },
+    { id: "curl", name: "Curl", category: "essential", isLocked: true, estimatedSize: 10 },
+    { id: "wget", name: "Wget", category: "essential", isLocked: true, estimatedSize: 10 },
 
     // Linguagens
     {
@@ -35,12 +40,14 @@ const AVAILABLE_TOOLS: Tool[] = [
         defaultVersion: "20",
         supportedVersions: ["18", "20", "22"],
         category: "language",
+        estimatedSize: 150,
     },
     {
         id: "python",
         name: "Python",
         defaultVersion: "3.11",
         category: "language",
+        estimatedSize: 100,
     },
     {
         id: "go",
@@ -48,19 +55,21 @@ const AVAILABLE_TOOLS: Tool[] = [
         defaultVersion: "1.22",
         supportedVersions: ["1.21", "1.22", "1.23"],
         category: "language",
+        estimatedSize: 250,
     },
     {
         id: "rust",
         name: "Rust",
         defaultVersion: "Stable",
         category: "language",
+        estimatedSize: 350,
     },
 
     // Ferramentas
-    { id: "ffmpeg", name: "FFmpeg", category: "tool" },
-    { id: "jq", name: "JQ", category: "tool" },
-    { id: "aws", name: "AWS CLI", defaultVersion: "v2", category: "tool" },
-    { id: "docker-cli", name: "Docker CLI", category: "tool" },
+    { id: "ffmpeg", name: "FFmpeg", category: "tool", estimatedSize: 100 },
+    { id: "jq", name: "JQ", category: "tool", estimatedSize: 5 },
+    { id: "aws", name: "AWS CLI", defaultVersion: "v2", category: "tool", estimatedSize: 60 },
+    { id: "docker-cli", name: "Docker CLI", category: "tool", estimatedSize: 40 },
 ];
 
 export function StackBuilder() {
@@ -93,6 +102,24 @@ export function StackBuilder() {
         return 30 + (customCount * 15);
     }, [selectedTools]);
 
+    const estimatedTotalSize = useMemo(() => {
+        let size = BASE_IMAGE_SIZE;
+        Object.keys(selectedTools).forEach(id => {
+            const tool = AVAILABLE_TOOLS.find(t => t.id === id);
+            if (tool && tool.estimatedSize) {
+                size += tool.estimatedSize;
+            }
+        });
+        return size;
+    }, [selectedTools]);
+
+    const formatSize = (mb: number) => {
+        if (mb >= 1000) {
+            return `~${(mb / 1000).toFixed(1)} GB`;
+        }
+        return `~${mb} MB`;
+    };
+
     // Animação do loader ASCII (apenas quando building)
     useEffect(() => {
         if (!isBuilding) return;
@@ -111,12 +138,19 @@ export function StackBuilder() {
     };
 
     const filteredTools = useMemo(() => {
-        if (!filterText) return AVAILABLE_TOOLS;
         const lowerFilter = filterText.toLowerCase();
-        return AVAILABLE_TOOLS.filter((t) =>
-            t.name.toLowerCase().includes(lowerFilter),
-        );
-    }, [filterText]);
+        const tools = filterText
+            ? AVAILABLE_TOOLS.filter((t) => t.name.toLowerCase().includes(lowerFilter))
+            : [...AVAILABLE_TOOLS];
+
+        return tools.sort((a, b) => {
+            const aSelected = !!selectedTools[a.id];
+            const bSelected = !!selectedTools[b.id];
+
+            if (aSelected === bSelected) return 0;
+            return aSelected ? -1 : 1;
+        });
+    }, [filterText, selectedTools]);
 
     // Scroll automático dos logs
     useEffect(() => {
@@ -190,7 +224,8 @@ export function StackBuilder() {
             // @ts-ignore
             await App.BuildCustomStack(selectedTools);
         } catch (err: any) {
-            useStackBuildStore.getState().completeBuild('error', `❌ Falha ao iniciar build: ${err.message}`);
+            const errorMessage = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
+            useStackBuildStore.getState().completeBuild('error', `Build initiation failed: ${errorMessage}`);
         }
     };
 
@@ -306,7 +341,7 @@ export function StackBuilder() {
                 {logs.map((log, i) => (
                     <p
                         key={i}
-                        className={`log-line ${log.includes("❌") ? "log-line--error" : ""} ${log.includes("✅") ? "log-line--success" : ""}`}
+                        className={`log-line ${log.includes("Error:") ? "log-line--error" : ""} ${log.includes("successfully") ? "log-line--success" : ""}`}
                     >
                         {log}
                     </p>
@@ -324,8 +359,12 @@ export function StackBuilder() {
                             <span className="time-estimated" title="Tempo estimado baseado na quantidade de ferramentas">
                                 Est. {formatTime(estimatedTotalSeconds)}
                             </span>
+                            <span className="time-separator" style={{ margin: "0 0.5rem", opacity: 0.2 }}>|</span>
+                            <span className="time-estimated" title="Tamanho estimado da imagem final (pode variar)">
+                                {formatSize(estimatedTotalSize)}
+                            </span>
                         </div>
-                        <span className="build-status-text">Construindo imagem...</span>
+                        <Shimmer className="build-status-text">Construindo imagem...</Shimmer>
                     </div>
                 )}
                 <button

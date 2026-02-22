@@ -32,8 +32,10 @@ export interface SessionConfig {
 export interface Session {
   id: string
   code: string
+  allowNewJoins: boolean
   hostUserID: string
   hostName: string
+  hostAvatarUrl?: string
   status: SessionStatus
   mode: SessionMode
   guests: SessionGuest[]

@@ -211,7 +211,7 @@ export function CommandCenter() {
               />
             </div>
           )}
-          className={`pane-window ${isActive ? 'pane-window--active' : 'pane-window--inactive'} ${isDropOverlayVisible ? 'pane-window--drop-ready' : ''}`}
+          className={`pane-window pane-window--${pane.type} ${isActive ? 'pane-window--active' : 'pane-window--inactive'} ${isDropOverlayVisible ? 'pane-window--drop-ready' : ''}`}
         >
           <div
             className="pane-content"

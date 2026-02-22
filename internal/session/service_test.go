@@ -8,10 +8,12 @@ import (
 
 func newServiceForTest(emit func(eventName string, data interface{})) *Service {
 	return &Service{
-		sessions:  make(map[string]*Session),
-		codeIndex: make(map[string]string),
-		hostIndex: make(map[string]string),
-		emitEvent: emit,
+		sessions:            make(map[string]*Session),
+		codeIndex:           make(map[string]string),
+		hostIndex:           make(map[string]string),
+		joinRateLimits:      make(map[string]joinRateLimitState),
+		invalidJoinAttempts: make(map[string]invalidJoinAttemptState),
+		emitEvent:           emit,
 	}
 }
 
@@ -39,8 +41,11 @@ func TestCreateSessionAppliesDefaultsAndGeneratesValidCode(t *testing.T) {
 	if session.Config.CodeTTLMinutes != 15 {
 		t.Fatalf("codeTTLMinutes = %d, want 15", session.Config.CodeTTLMinutes)
 	}
+	if !session.AllowNewJoins {
+		t.Fatalf("allowNewJoins = %t, want true", session.AllowNewJoins)
+	}
 	if !validateCodeFormat(session.Code) {
-		t.Fatalf("generated code %q is not in XXX-YY format", session.Code)
+		t.Fatalf("generated code %q is not in XXXX-XXX format", session.Code)
 	}
 
 	ttl := session.ExpiresAt.Sub(start)
@@ -210,6 +215,9 @@ func TestApproveGuestKeepsCodeUntilFirstPeerConnected(t *testing.T) {
 	if _, ok := svc.codeIndex[normalizeCode(session.Code)]; ok {
 		t.Fatalf("code should be invalidated after first peer_connected")
 	}
+	if current.AllowNewJoins {
+		t.Fatalf("allowNewJoins should be false after first peer_connected")
+	}
 
 	_, err = svc.JoinSession(session.Code, "guest-3", GuestInfo{Name: "Guest Three"})
 	if err == nil {
@@ -217,6 +225,111 @@ func TestApproveGuestKeepsCodeUntilFirstPeerConnected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "session not found for code") {
 		t.Fatalf("unexpected error = %v", err)
+	}
+}
+
+func TestRegenerateCodeReopensJoinAfterFirstPeerConnected(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	originalCode := session.Code
+
+	if _, err := svc.JoinSession(session.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+		t.Fatalf("JoinSession() error = %v", err)
+	}
+	if err := svc.ApproveGuest(session.ID, "guest-1"); err != nil {
+		t.Fatalf("ApproveGuest() error = %v", err)
+	}
+	if err := svc.MarkGuestConnected(session.ID, "guest-1"); err != nil {
+		t.Fatalf("MarkGuestConnected() error = %v", err)
+	}
+
+	updated, err := svc.RegenerateCode(session.ID)
+	if err != nil {
+		t.Fatalf("RegenerateCode() error = %v", err)
+	}
+	if updated.Code == "" {
+		t.Fatalf("regenerated code should not be empty")
+	}
+	if updated.Code == originalCode {
+		t.Fatalf("regenerated code should rotate, got same code %q", updated.Code)
+	}
+	if !updated.AllowNewJoins {
+		t.Fatalf("allowNewJoins should be true after regenerate")
+	}
+
+	if _, err := svc.JoinSession(updated.Code, "guest-2", GuestInfo{Name: "Guest Two"}); err != nil {
+		t.Fatalf("join with regenerated code should succeed, got: %v", err)
+	}
+}
+
+func TestRevokeCodeDisablesJoinAndClearsCode(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	originalCode := session.Code
+
+	updated, err := svc.RevokeCode(session.ID)
+	if err != nil {
+		t.Fatalf("RevokeCode() error = %v", err)
+	}
+	if updated.AllowNewJoins {
+		t.Fatalf("allowNewJoins should be false after revoke")
+	}
+	if updated.Code != "" {
+		t.Fatalf("code should be empty after revoke, got %q", updated.Code)
+	}
+	if _, indexed := svc.codeIndex[normalizeCode(originalCode)]; indexed {
+		t.Fatalf("original code should be removed from index after revoke")
+	}
+
+	_, err = svc.JoinSession(originalCode, "guest-1", GuestInfo{Name: "Guest One"})
+	if err == nil {
+		t.Fatalf("expected revoked code to fail")
+	}
+	if !strings.Contains(err.Error(), "session not found for code") {
+		t.Fatalf("unexpected error = %v", err)
+	}
+}
+
+func TestSetAllowNewJoinsToggleAndReEnable(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	originalCode := session.Code
+
+	updated, err := svc.SetAllowNewJoins(session.ID, false)
+	if err != nil {
+		t.Fatalf("SetAllowNewJoins(false) error = %v", err)
+	}
+	if updated.AllowNewJoins {
+		t.Fatalf("allowNewJoins should be false")
+	}
+
+	_, err = svc.JoinSession(originalCode, "guest-1", GuestInfo{Name: "Guest One"})
+	if err == nil {
+		t.Fatalf("expected join to fail while allowNewJoins is disabled")
+	}
+
+	updated, err = svc.SetAllowNewJoins(session.ID, true)
+	if err != nil {
+		t.Fatalf("SetAllowNewJoins(true) error = %v", err)
+	}
+	if !updated.AllowNewJoins {
+		t.Fatalf("allowNewJoins should be true")
+	}
+	if updated.Code == "" {
+		t.Fatalf("code should be available after enabling joins")
+	}
+
+	if _, err := svc.JoinSession(updated.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+		t.Fatalf("join should succeed after enabling joins, got: %v", err)
 	}
 }
 
@@ -406,5 +519,221 @@ func TestJoinSessionRenewsExpiredRequestWithoutDuplication(t *testing.T) {
 	}
 	if !session.Guests[0].JoinedAt.After(time.Now().Add(-30 * time.Second)) {
 		t.Fatalf("joinedAt should be renewed, got %s", session.Guests[0].JoinedAt)
+	}
+}
+
+func TestJoinSessionRateLimitScopesByGuestAndSession(t *testing.T) {
+	svc := newServiceForTest(nil)
+	sessionA, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession(sessionA) error = %v", err)
+	}
+	sessionB, err := svc.CreateSession("host-2", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession(sessionB) error = %v", err)
+	}
+
+	for i := 0; i < joinRateLimitMaxAttempts; i++ {
+		if _, err := svc.JoinSession(sessionA.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+			t.Fatalf("JoinSession() attempt %d error = %v", i+1, err)
+		}
+	}
+
+	_, err = svc.JoinSession(sessionA.Code, "guest-1", GuestInfo{Name: "Guest One"})
+	if err == nil {
+		t.Fatalf("expected join rate-limit error for guest-1 in sessionA")
+	}
+	if !strings.Contains(err.Error(), "join rate limit exceeded") {
+		t.Fatalf("unexpected rate-limit error: %v", err)
+	}
+
+	// Outro guest na mesma sessão não deve herdar o bloqueio.
+	if _, err := svc.JoinSession(sessionA.Code, "guest-2", GuestInfo{Name: "Guest Two"}); err != nil {
+		t.Fatalf("JoinSession() for different guest should succeed, got: %v", err)
+	}
+
+	// Mesmo guest em outra sessão também não deve herdar o bloqueio.
+	if _, err := svc.JoinSession(sessionB.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+		t.Fatalf("JoinSession() for same guest in different session should succeed, got: %v", err)
+	}
+}
+
+func TestJoinSessionRateLimitResetsAfterWindow(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	for i := 0; i < joinRateLimitMaxAttempts; i++ {
+		if _, err := svc.JoinSession(session.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+			t.Fatalf("JoinSession() attempt %d error = %v", i+1, err)
+		}
+	}
+
+	if _, err := svc.JoinSession(session.Code, "guest-1", GuestInfo{Name: "Guest One"}); err == nil {
+		t.Fatalf("expected rate-limit error before window reset")
+	}
+
+	key := buildJoinRateLimitKey(session.ID, "guest-1")
+	state, exists := svc.joinRateLimits[key]
+	if !exists {
+		t.Fatalf("expected rate-limit state for key %q", key)
+	}
+	state.windowStart = time.Now().Add(-joinRateLimitWindow - time.Second)
+	svc.joinRateLimits[key] = state
+
+	if _, err := svc.JoinSession(session.Code, "guest-1", GuestInfo{Name: "Guest One"}); err != nil {
+		t.Fatalf("expected join after window reset to succeed, got: %v", err)
+	}
+}
+
+func TestJoinSessionInvalidAttemptsTriggerTemporaryLock(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	guestID := "guest-1"
+	for i := 0; i < invalidJoinLockMaxAttempts-1; i++ {
+		_, err := svc.JoinSession("bad", guestID, GuestInfo{Name: "Guest One"})
+		if err == nil {
+			t.Fatalf("expected invalid-code error on attempt %d", i+1)
+		}
+		if !strings.Contains(err.Error(), "invalid code format") {
+			t.Fatalf("expected invalid format error before lock, got: %v", err)
+		}
+	}
+
+	_, err = svc.JoinSession("bad", guestID, GuestInfo{Name: "Guest One"})
+	if err == nil {
+		t.Fatalf("expected lock error after max invalid attempts")
+	}
+	if !strings.Contains(err.Error(), "too many invalid join attempts") {
+		t.Fatalf("unexpected lock error: %v", err)
+	}
+
+	// Guest bloqueado deve falhar até em código válido.
+	_, err = svc.JoinSession(session.Code, guestID, GuestInfo{Name: "Guest One"})
+	if err == nil {
+		t.Fatalf("expected valid code to be blocked while guest lock is active")
+	}
+	if !strings.Contains(err.Error(), "too many invalid join attempts") {
+		t.Fatalf("unexpected lock error on valid code: %v", err)
+	}
+
+	// Outro guest não pode herdar lock.
+	if _, err := svc.JoinSession(session.Code, "guest-2", GuestInfo{Name: "Guest Two"}); err != nil {
+		t.Fatalf("different guest should not inherit lock: %v", err)
+	}
+}
+
+func TestJoinSessionInvalidAttemptLockExpires(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	guestID := "guest-1"
+	for i := 0; i < invalidJoinLockMaxAttempts; i++ {
+		_, _ = svc.JoinSession("bad", guestID, GuestInfo{Name: "Guest One"})
+	}
+
+	key := normalizeGuestID(guestID)
+	state, exists := svc.invalidJoinAttempts[key]
+	if !exists {
+		t.Fatalf("expected invalid attempt state for key %q", key)
+	}
+	state.lockUntil = time.Now().Add(-time.Second)
+	state.windowStart = time.Now().Add(-invalidJoinAttemptWindow - time.Second)
+	svc.invalidJoinAttempts[key] = state
+
+	if _, err := svc.JoinSession(session.Code, guestID, GuestInfo{Name: "Guest One"}); err != nil {
+		t.Fatalf("expected join after lock expiration to succeed, got: %v", err)
+	}
+}
+
+func TestJoinSessionSecurityMetricsAndEvents(t *testing.T) {
+	type capturedEvent struct {
+		name    string
+		payload JoinSecurityEvent
+	}
+
+	events := make([]capturedEvent, 0, invalidJoinLockMaxAttempts+2)
+	svc := newServiceForTest(func(eventName string, data interface{}) {
+		payload, ok := data.(JoinSecurityEvent)
+		if !ok {
+			return
+		}
+		events = append(events, capturedEvent{name: eventName, payload: payload})
+	})
+
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	guestID := "guest-1"
+	for i := 0; i < invalidJoinLockMaxAttempts; i++ {
+		_, _ = svc.JoinSession("bad", guestID, GuestInfo{Name: "Guest One"})
+	}
+	_, _ = svc.JoinSession(session.Code, guestID, GuestInfo{Name: "Guest One"})
+
+	metrics := svc.GetJoinSecurityMetrics()
+	if metrics.InvalidAttemptsTotal != invalidJoinLockMaxAttempts {
+		t.Fatalf("invalidAttemptsTotal = %d, want %d", metrics.InvalidAttemptsTotal, invalidJoinLockMaxAttempts)
+	}
+	if metrics.InvalidFormatAttemptsTotal != invalidJoinLockMaxAttempts {
+		t.Fatalf("invalidFormatAttemptsTotal = %d, want %d", metrics.InvalidFormatAttemptsTotal, invalidJoinLockMaxAttempts)
+	}
+	if metrics.BlockedAttemptsTotal != 2 {
+		t.Fatalf("blockedAttemptsTotal = %d, want 2", metrics.BlockedAttemptsTotal)
+	}
+	if metrics.LockoutsTotal != 1 {
+		t.Fatalf("lockoutsTotal = %d, want 1", metrics.LockoutsTotal)
+	}
+	if metrics.ActiveLocks != 1 {
+		t.Fatalf("activeLocks = %d, want 1", metrics.ActiveLocks)
+	}
+	if metrics.LastInvalidAttemptAt.IsZero() {
+		t.Fatalf("lastInvalidAttemptAt should be set")
+	}
+	if metrics.LastBlockedAt.IsZero() {
+		t.Fatalf("lastBlockedAt should be set")
+	}
+
+	invalidEvents := 0
+	blockedEvents := 0
+	foundActiveLock := false
+	foundLockThreshold := false
+
+	for _, evt := range events {
+		switch evt.name {
+		case JoinSecurityEventInvalidAttempt:
+			invalidEvents++
+		case JoinSecurityEventBlocked:
+			blockedEvents++
+			if evt.payload.Reason == joinBlockedReasonActiveLock && evt.payload.SessionID == session.ID {
+				foundActiveLock = true
+			}
+			if evt.payload.Reason == joinInvalidReasonInvalidFormat && evt.payload.Attempt == invalidJoinLockMaxAttempts {
+				foundLockThreshold = true
+			}
+		}
+	}
+
+	if invalidEvents != invalidJoinLockMaxAttempts {
+		t.Fatalf("invalidEvents = %d, want %d", invalidEvents, invalidJoinLockMaxAttempts)
+	}
+	if blockedEvents != 2 {
+		t.Fatalf("blockedEvents = %d, want 2", blockedEvents)
+	}
+	if !foundLockThreshold {
+		t.Fatalf("expected blocked event when lock threshold is reached")
+	}
+	if !foundActiveLock {
+		t.Fatalf("expected active-lock blocked event for valid code during lock window")
 	}
 }

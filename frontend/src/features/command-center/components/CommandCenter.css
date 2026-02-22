@@ -54,6 +54,10 @@
   border: 1px solid var(--border-primary) !important;
 }
 
+.pane-window--terminal {
+  border-radius: 0;
+}
+
 .pane-window--active {
   border-color: var(--border-primary) !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(var(--accent-rgb), 0.2);

@@ -181,6 +181,7 @@ func (a *App) Startup(ctx context.Context) {
 
 	// 8. Inicializar Session Service (P2P)
 	a.session = session.NewService(func(eventName string, data interface{}) {
+		a.observeSessionTelemetry(eventName, data)
 		runtime.EventsEmit(a.ctx, eventName, data)
 	})
 	a.restorePersistedSessionStates()
@@ -1056,6 +1057,27 @@ func (a *App) resolveSessionHostUserID() string {
 	return hostUserID
 }
 
+func (a *App) requireGitHubSessionUser() (*auth.User, error) {
+	if a.auth == nil {
+		return nil, fmt.Errorf("serviço de autenticação não inicializado")
+	}
+
+	user, err := a.auth.GetCurrentUser()
+	if err != nil || user == nil {
+		return nil, fmt.Errorf("sessões colaborativas exigem autenticação com GitHub")
+	}
+
+	if strings.TrimSpace(user.ID) == "" {
+		return nil, fmt.Errorf("sessões colaborativas exigem um usuário autenticado válido")
+	}
+
+	if strings.ToLower(strings.TrimSpace(user.Provider)) != "github" {
+		return nil, fmt.Errorf("sessões colaborativas exigem autenticação com GitHub")
+	}
+
+	return user, nil
+}
+
 func guestTerminalPermissionFromSession(sessionGuest session.SessionGuest) terminal.TerminalPermission {
 	if sessionGuest.Status != session.GuestApproved && sessionGuest.Status != session.GuestConnected {
 		return terminal.PermissionNone
@@ -1354,6 +1376,49 @@ func (a *App) auditSessionEvent(sessionID, userID, action, details string) {
 	if err := a.db.SaveAuditEvent(event); err != nil {
 		log.Printf("[AUDIT] failed to persist event: %s", a.sanitizeForLogs(err.Error()))
 	}
+}
+
+func (a *App) observeSessionTelemetry(eventName string, data interface{}) {
+	switch eventName {
+	case session.JoinSecurityEventInvalidAttempt, session.JoinSecurityEventBlocked:
+		payload, ok := data.(session.JoinSecurityEvent)
+		if !ok {
+			return
+		}
+		a.handleJoinSecurityTelemetry(eventName, payload)
+	}
+}
+
+func (a *App) handleJoinSecurityTelemetry(eventName string, payload session.JoinSecurityEvent) {
+	log.Printf(
+		"[SESSION][SECURITY] event=%s session=%s guest=%s reason=%s attempt=%d/%d retryAfter=%ds locked=%t",
+		eventName,
+		payload.SessionID,
+		payload.GuestUserID,
+		payload.Reason,
+		payload.Attempt,
+		payload.MaxAttempts,
+		payload.RetryAfterSeconds,
+		payload.Locked,
+	)
+
+	if payload.SessionID == "" {
+		return
+	}
+
+	action := "guest_join_failed"
+	if eventName == session.JoinSecurityEventBlocked || payload.Locked {
+		action = "guest_join_blocked"
+	}
+	details := fmt.Sprintf(
+		"reason=%s attempt=%d/%d retryAfter=%ds locked=%t",
+		payload.Reason,
+		payload.Attempt,
+		payload.MaxAttempts,
+		payload.RetryAfterSeconds,
+		payload.Locked,
+	)
+	a.auditSessionEvent(payload.SessionID, payload.GuestUserID, action, details)
 }
 
 func (a *App) setSessionContainer(sessionID, containerID string) {
@@ -2586,11 +2651,13 @@ func (a *App) gatewayJoinSession(code, guestUserID string, guestInfo session.Gue
 	return &result, nil
 }
 
-func (a *App) gatewayCreateSession(hostUserID string, cfg session.SessionConfig) (*session.Session, error) {
+func (a *App) gatewayCreateSession(hostUserID, hostName, hostAvatarURL string, cfg session.SessionConfig) (*session.Session, error) {
 	var result session.Session
 	err := a.callSessionGateway(http.MethodPost, "/api/session/create", map[string]interface{}{
-		"hostUserID": hostUserID,
-		"config":     cfg,
+		"hostUserID":    hostUserID,
+		"hostName":      hostName,
+		"hostAvatarUrl": hostAvatarURL,
+		"config":        cfg,
 	}, &result)
 	if err != nil {
 		return nil, err
@@ -2660,12 +2727,69 @@ func (a *App) gatewayKickGuest(sessionID, guestUserID string) error {
 	}, nil)
 }
 
+func (a *App) gatewayRegenerateSessionCode(sessionID string) (*session.Session, error) {
+	var result session.Session
+	err := a.callSessionGateway(http.MethodPost, "/api/session/code/regenerate", map[string]interface{}{
+		"sessionID": sessionID,
+	}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewayRevokeSessionCode(sessionID string) (*session.Session, error) {
+	var result session.Session
+	err := a.callSessionGateway(http.MethodPost, "/api/session/code/revoke", map[string]interface{}{
+		"sessionID": sessionID,
+	}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (a *App) gatewaySetAllowNewJoins(sessionID string, allow bool) (*session.Session, error) {
+	var result session.Session
+	err := a.callSessionGateway(http.MethodPost, "/api/session/allow-joins", map[string]interface{}{
+		"sessionID": sessionID,
+		"allow":     allow,
+	}, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func isSessionNotFoundErr(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "session not found") || strings.Contains(msg, "session not found for code")
+}
+
+const genericSessionJoinCodeError = "código inválido ou expirado"
+
+func isSessionJoinCodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid code format") ||
+		strings.Contains(msg, "session not found for code") ||
+		strings.Contains(msg, "session code has expired") ||
+		strings.Contains(msg, "too many invalid join attempts")
+}
+
+func sanitizeSessionJoinError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isSessionJoinCodeError(err) {
+		return errors.New(genericSessionJoinCodeError)
+	}
+	return err
 }
 
 func sessionPersistUntil(sess *session.Session, now time.Time) time.Time {
@@ -2778,7 +2902,18 @@ func (a *App) restorePersistedSessionStates() {
 
 // SessionCreate cria uma nova sessão de colaboração limitada a um workspace.
 func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, workspaceID uint) (*session.Session, error) {
-	hostUserID := a.resolveSessionHostUserID()
+	hostUser, err := a.requireGitHubSessionUser()
+	if err != nil {
+		return nil, err
+	}
+
+	hostUserID := strings.TrimSpace(hostUser.ID)
+	hostName := strings.TrimSpace(hostUser.Name)
+	if hostName == "" {
+		hostName = hostUserID
+	}
+	hostAvatarURL := strings.TrimSpace(hostUser.AvatarURL)
+	allowAnonymous = false
 
 	if a.db == nil {
 		return nil, fmt.Errorf("database service not initialized")
@@ -2786,7 +2921,6 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, wor
 
 	var (
 		scopedWorkspace *database.Workspace
-		err             error
 	)
 	if workspaceID == 0 {
 		scopedWorkspace, err = a.db.GetActiveWorkspace()
@@ -2800,7 +2934,7 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, wor
 	cfg := session.SessionConfig{
 		MaxGuests:      maxGuests,
 		DefaultPerm:    session.PermReadOnly,
-		AllowAnonymous: allowAnonymous,
+		AllowAnonymous: false,
 		Mode:           session.SessionMode(mode),
 		WorkspaceID:    scopedWorkspace.ID,
 		WorkspaceName:  strings.TrimSpace(scopedWorkspace.Name),
@@ -2871,7 +3005,7 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, wor
 	var createdSession *session.Session
 
 	if !a.sessionGatewayOwner {
-		createdSession, err = a.gatewayCreateSession(hostUserID, cfg)
+		createdSession, err = a.gatewayCreateSession(hostUserID, hostName, hostAvatarURL, cfg)
 		if err != nil {
 			if containerID != "" && a.docker != nil {
 				_ = a.docker.StopContainer(containerID)
@@ -2896,6 +3030,9 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, wor
 			return nil, err
 		}
 	}
+	createdSession.HostUserID = hostUserID
+	createdSession.HostName = hostName
+	createdSession.HostAvatarURL = hostAvatarURL
 
 	if containerID != "" {
 		a.setSessionContainer(createdSession.ID, containerID)
@@ -2922,23 +3059,25 @@ func (a *App) SessionCreate(maxGuests int, mode string, allowAnonymous bool, wor
 
 // SessionJoin entra em uma sessão usando um código
 func (a *App) SessionJoin(code string, name string, email string) (*session.JoinResult, error) {
-	guestUserID := a.anonymousGuestID
-	avatarURL := ""
-	if a.auth != nil {
-		if user, err := a.auth.GetCurrentUser(); err == nil && user != nil {
-			guestUserID = user.ID
-			if name == "" {
-				name = user.Name
-			}
-			if email == "" {
-				email = user.Email
-			}
-			avatarURL = user.AvatarURL
-		}
+	guestUser, err := a.requireGitHubSessionUser()
+	if err != nil {
+		return nil, err
 	}
 
-	if name == "" {
-		name = "Anonymous Guest"
+	guestUserID := strings.TrimSpace(guestUser.ID)
+	if guestUserID == "" {
+		return nil, fmt.Errorf("sessões colaborativas exigem um usuário autenticado válido")
+	}
+	avatarURL := strings.TrimSpace(guestUser.AvatarURL)
+
+	if strings.TrimSpace(name) == "" {
+		name = strings.TrimSpace(guestUser.Name)
+	}
+	if strings.TrimSpace(email) == "" {
+		email = strings.TrimSpace(guestUser.Email)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = guestUserID
 	}
 
 	guestInfo := session.GuestInfo{
@@ -2951,9 +3090,9 @@ func (a *App) SessionJoin(code string, name string, email string) (*session.Join
 		result, err := a.gatewayJoinSession(code, guestUserID, guestInfo)
 		if err != nil {
 			if !a.sessionGatewayOwner {
-				return nil, fmt.Errorf("gateway join failed in client mode: %w", err)
+				return nil, sanitizeSessionJoinError(fmt.Errorf("gateway join failed in client mode: %w", err))
 			}
-			return nil, fmt.Errorf("session service not initialized and gateway join failed: %w", err)
+			return nil, sanitizeSessionJoinError(fmt.Errorf("session service not initialized and gateway join failed: %w", err))
 		}
 		a.auditSessionEvent(result.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
 		return result, nil
@@ -2965,12 +3104,12 @@ func (a *App) SessionJoin(code string, name string, email string) (*session.Join
 		if isSessionNotFoundErr(err) {
 			remoteResult, remoteErr := a.gatewayJoinSession(code, guestUserID, guestInfo)
 			if remoteErr != nil {
-				return nil, fmt.Errorf("%v (gateway fallback failed: %w)", err, remoteErr)
+				return nil, sanitizeSessionJoinError(fmt.Errorf("%v (gateway fallback failed: %w)", err, remoteErr))
 			}
 			a.auditSessionEvent(remoteResult.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
 			return remoteResult, nil
 		}
-		return nil, err
+		return nil, sanitizeSessionJoinError(err)
 	}
 
 	a.auditSessionEvent(result.SessionID, guestUserID, "guest_requested_join", fmt.Sprintf("name=%s", name))
@@ -3153,6 +3292,87 @@ func (a *App) SessionKickGuest(sessionID, guestUserID string) error {
 	return nil
 }
 
+// SessionRegenerateCode gera um novo código de convite para a sessão.
+func (a *App) SessionRegenerateCode(sessionID string) (*session.Session, error) {
+	var (
+		updated *session.Session
+		err     error
+	)
+	if a.session == nil || !a.sessionGatewayOwner {
+		updated, err = a.gatewayRegenerateSessionCode(sessionID)
+	} else {
+		updated, err = a.session.RegenerateCode(sessionID)
+		if isSessionNotFoundErr(err) {
+			updated, err = a.gatewayRegenerateSessionCode(sessionID)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	a.auditSessionEvent(sessionID, "host", "code_regenerated", "Host generated a new session join code")
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
+	return updated, nil
+}
+
+// SessionRevokeCode invalida o código de convite atual da sessão.
+func (a *App) SessionRevokeCode(sessionID string) (*session.Session, error) {
+	var (
+		updated *session.Session
+		err     error
+	)
+	if a.session == nil || !a.sessionGatewayOwner {
+		updated, err = a.gatewayRevokeSessionCode(sessionID)
+	} else {
+		updated, err = a.session.RevokeCode(sessionID)
+		if isSessionNotFoundErr(err) {
+			updated, err = a.gatewayRevokeSessionCode(sessionID)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	a.auditSessionEvent(sessionID, "host", "code_revoked", "Host revoked the current session join code")
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
+	return updated, nil
+}
+
+// SessionSetAllowNewJoins habilita/desabilita novos pedidos de entrada.
+func (a *App) SessionSetAllowNewJoins(sessionID string, allow bool) (*session.Session, error) {
+	var (
+		updated *session.Session
+		err     error
+	)
+	if a.session == nil || !a.sessionGatewayOwner {
+		updated, err = a.gatewaySetAllowNewJoins(sessionID, allow)
+	} else {
+		updated, err = a.session.SetAllowNewJoins(sessionID, allow)
+		if isSessionNotFoundErr(err) {
+			updated, err = a.gatewaySetAllowNewJoins(sessionID, allow)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	action := "allow_new_joins_disabled"
+	details := "Host disabled new join requests"
+	if allow {
+		action = "allow_new_joins_enabled"
+		details = "Host enabled new join requests"
+	}
+	a.auditSessionEvent(sessionID, "host", action, details)
+	if a.sessionGatewayOwner {
+		a.persistSessionState(sessionID)
+	}
+	return updated, nil
+}
+
 // SessionGetActive retorna a sessão ativa do host
 func (a *App) SessionGetActive() (*session.Session, error) {
 	hostUserID := a.resolveSessionHostUserID()
@@ -3196,6 +3416,21 @@ func (a *App) SessionGetICEServers() []session.ICEServerConfig {
 		return []session.ICEServerConfig{}
 	}
 	return a.session.GetICEServers()
+}
+
+// SessionGetJoinSecurityMetrics retorna métricas agregadas de tentativas inválidas/bloqueios de join.
+func (a *App) SessionGetJoinSecurityMetrics() session.JoinSecurityMetrics {
+	var metrics session.JoinSecurityMetrics
+	if a.session == nil {
+		return metrics
+	}
+	if a.sessionGatewayOwner {
+		return a.session.GetJoinSecurityMetrics()
+	}
+	if err := a.callSessionGateway(http.MethodGet, "/api/session/metrics/join-security", nil, &metrics); err != nil {
+		log.Printf("[SESSION][SECURITY] unable to fetch join metrics from gateway: %v", err)
+	}
+	return metrics
 }
 
 // SessionGetAuditLogs retorna os eventos de auditoria de uma sessão.
@@ -3373,6 +3608,10 @@ func (a *App) BuildCustomStack(tools map[string]string) error {
 		return fmt.Errorf("docker service not initialized")
 	}
 
+	if !a.docker.IsDockerAvailable() {
+		return fmt.Errorf("Docker não detectado ou não está rodando. Verifique se o Docker Desktop está aberto.")
+	}
+
 	// Prevenir builds simultâneos
 	a.stackBuildMu.Lock()
 	if a.stackBuildRunning {
@@ -3380,7 +3619,7 @@ func (a *App) BuildCustomStack(tools map[string]string) error {
 		return fmt.Errorf("a build is already in progress")
 	}
 	a.stackBuildRunning = true
-	a.stackBuildLogs = []string{"🚀 Iniciando build do ambiente..."}
+	a.stackBuildLogs = []string{"Starting environment build..."}
 	a.stackBuildStart = time.Now().Unix()
 	a.stackBuildResult = ""
 	a.stackBuildMu.Unlock()

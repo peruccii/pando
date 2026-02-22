@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,10 @@ func (g *GatewayServer) Start() error {
 	mux.HandleFunc("/api/session/pending", g.handleListPendingGuests)
 	mux.HandleFunc("/api/session/permission", g.handleSetGuestPermission)
 	mux.HandleFunc("/api/session/kick", g.handleKickGuest)
+	mux.HandleFunc("/api/session/code/regenerate", g.handleRegenerateCode)
+	mux.HandleFunc("/api/session/code/revoke", g.handleRevokeCode)
+	mux.HandleFunc("/api/session/allow-joins", g.handleSetAllowNewJoins)
+	mux.HandleFunc("/api/session/metrics/join-security", g.handleGetJoinSecurityMetrics)
 	mux.HandleFunc("/api/session/ice", g.handleGetICEServers)
 
 	listener, err := net.Listen("tcp", g.addr)
@@ -92,8 +97,10 @@ func (g *GatewayServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 type createSessionRequest struct {
-	HostUserID string        `json:"hostUserID"`
-	Config     SessionConfig `json:"config"`
+	HostUserID    string        `json:"hostUserID"`
+	HostName      string        `json:"hostName,omitempty"`
+	HostAvatarURL string        `json:"hostAvatarUrl,omitempty"`
+	Config        SessionConfig `json:"config"`
 }
 
 func (g *GatewayServer) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +123,12 @@ func (g *GatewayServer) handleCreateSession(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeGatewayError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if hostName := strings.TrimSpace(req.HostName); hostName != "" {
+		session.HostName = hostName
+	}
+	if hostAvatarURL := strings.TrimSpace(req.HostAvatarURL); hostAvatarURL != "" {
+		session.HostAvatarURL = hostAvatarURL
 	}
 	if g.onSessionChanged != nil {
 		g.onSessionChanged(session.ID)
@@ -325,12 +338,88 @@ func (g *GatewayServer) handleKickGuest(w http.ResponseWriter, r *http.Request) 
 	writeGatewayJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (g *GatewayServer) handleRegenerateCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req endSessionRequest
+	if err := decodeGatewayJSON(r, &req); err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, err := g.service.RegenerateCode(req.SessionID)
+	if err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if g.onSessionChanged != nil {
+		g.onSessionChanged(req.SessionID)
+	}
+	writeGatewayJSON(w, http.StatusOK, session)
+}
+
+func (g *GatewayServer) handleRevokeCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req endSessionRequest
+	if err := decodeGatewayJSON(r, &req); err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, err := g.service.RevokeCode(req.SessionID)
+	if err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if g.onSessionChanged != nil {
+		g.onSessionChanged(req.SessionID)
+	}
+	writeGatewayJSON(w, http.StatusOK, session)
+}
+
+type setAllowNewJoinsRequest struct {
+	SessionID string `json:"sessionID"`
+	Allow     bool   `json:"allow"`
+}
+
+func (g *GatewayServer) handleSetAllowNewJoins(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req setAllowNewJoinsRequest
+	if err := decodeGatewayJSON(r, &req); err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, err := g.service.SetAllowNewJoins(req.SessionID, req.Allow)
+	if err != nil {
+		writeGatewayError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if g.onSessionChanged != nil {
+		g.onSessionChanged(req.SessionID)
+	}
+	writeGatewayJSON(w, http.StatusOK, session)
+}
+
 func (g *GatewayServer) handleGetICEServers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeGatewayError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	writeGatewayJSON(w, http.StatusOK, g.service.GetICEServers())
+}
+
+func (g *GatewayServer) handleGetJoinSecurityMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeGatewayError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeGatewayJSON(w, http.StatusOK, g.service.GetJoinSecurityMetrics())
 }
 
 func decodeGatewayJSON(r *http.Request, target any) error {

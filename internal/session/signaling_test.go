@@ -128,6 +128,35 @@ func TestSignalingForwardsSDPAndICEBetweenHostAndGuest(t *testing.T) {
 	}
 }
 
+func TestSignalingReplaysPendingOfferWhenGuestConnectsLate(t *testing.T) {
+	svc := newServiceForTest(nil)
+	session, err := svc.CreateSession("host-1", SessionConfig{})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	signaling := NewSignalingService(svc)
+	server := httptest.NewServer(http.HandlerFunc(signaling.HandleWebSocket))
+	t.Cleanup(server.Close)
+
+	hostConn := connectSignalWS(t, server.URL, session.ID, "host-1", "host")
+
+	mustWriteSignal(t, hostConn, SignalMessage{
+		Type:         "sdp_offer",
+		TargetUserID: "guest-1",
+		Payload:      "offer-late",
+	})
+
+	guestConn := connectSignalWS(t, server.URL, session.ID, "guest-1", "guest")
+	replayed := mustReadSignal(t, guestConn)
+	if replayed.Type != "sdp_offer" || replayed.Payload != "offer-late" {
+		t.Fatalf("unexpected replayed offer: %+v", replayed)
+	}
+	if replayed.FromUserID != "host-1" {
+		t.Fatalf("fromUserID = %q, want host-1", replayed.FromUserID)
+	}
+}
+
 func TestSignalingForwardsGuestRequestApproveAndReject(t *testing.T) {
 	svc := newServiceForTest(nil)
 	session, err := svc.CreateSession("host-1", SessionConfig{})

@@ -178,6 +178,8 @@ export function SessionGetAuditLogs(arg1:string,arg2:number):Promise<Array<datab
 
 export function SessionGetICEServers():Promise<Array<session.ICEServerConfig>>;
 
+export function SessionGetJoinSecurityMetrics():Promise<session.JoinSecurityMetrics>;
+
 export function SessionGetSession(arg1:string):Promise<session.Session>;
 
 export function SessionGetSignalingURL():Promise<string>;
@@ -188,9 +190,15 @@ export function SessionKickGuest(arg1:string,arg2:string):Promise<void>;
 
 export function SessionListPendingGuests(arg1:string):Promise<Array<session.GuestRequest>>;
 
+export function SessionRegenerateCode(arg1:string):Promise<session.Session>;
+
 export function SessionRejectGuest(arg1:string,arg2:string):Promise<void>;
 
 export function SessionRestartEnvironment(arg1:string):Promise<void>;
+
+export function SessionRevokeCode(arg1:string):Promise<session.Session>;
+
+export function SessionSetAllowNewJoins(arg1:string,arg2:boolean):Promise<session.Session>;
 
 export function SessionSetGuestPermission(arg1:string,arg2:string,arg3:string):Promise<void>;
 

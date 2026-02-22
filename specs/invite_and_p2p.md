@@ -17,9 +17,9 @@ Implementar sistema de convite via código curto + conexão direta P2P via WebRT
 
 ```
 1. Host clica "Start Session"
-2. Backend gera Short Code (ex: X92-B4) + registra sessão
+2. Backend gera Short Code (ex: X92B-4K7) + registra sessão
 3. Host envia código para Guest (Slack/WhatsApp/etc)
-4. Guest abre app → "Join Session" → digita X92-B4
+4. Guest abre app → "Join Session" → digita X92B-4K7
 5. Backend valida código + envia evento para Host: "Fulano quer entrar"
 6. Host aprova no "Waiting Room"
 7. Backend troca SDP Offer/Answer entre Host e Guest
@@ -52,7 +52,7 @@ type ISessionService interface {
 
 type Session struct {
     ID          string
-    Code        string          // "X92-B4"
+    Code        string          // "X92B-4K7"
     HostUserID  string
     Status      string          // "waiting", "active", "ended"
     Mode        string          // "docker", "liveshare"
@@ -92,11 +92,11 @@ type GuestRequest struct {
 
 ```go
 func generateShortCode() string {
-    // Formato: XXX-YY (fácil de ditar por voz)
+    // Formato: XXXX-XXX (fácil de ditar por voz)
     chars := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // Sem 0/O/1/I
     
-    part1 := make([]byte, 3)
-    part2 := make([]byte, 2)
+    part1 := make([]byte, 4)
+    part2 := make([]byte, 3)
     
     for i := range part1 {
         n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
@@ -115,7 +115,7 @@ func generateShortCode() string {
 
 | Requisito      | Especificação                                |
 | --------------- | -------------------------------------------- |
-| Formato         | `XXX-YY` (letras/números, sem ambíguos)       |
+| Formato         | `XXXX-XXX` (letras/números, sem ambíguos)     |
 | Expiração       | 15 min após criação (configurável)            |
 | Uso Único       | Invalidado após conexão bem-sucedida          |
 | Charset         | `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`            |
@@ -289,7 +289,7 @@ class P2PConnection {
 ┌──────────────────────────────────────┐
 │  ⏳ Aguardando aprovação do Host...   │
 │                                      │
-│  Sessão: X92-B4                      │
+│  Sessão: X92B-4K7                    │
 │  Host: perucci                       │
 │                                      │
 │  [ Cancelar ]                        │

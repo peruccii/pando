@@ -14,6 +14,9 @@ type ISessionService interface {
 	ApproveGuest(sessionID, guestUserID string) error
 	RejectGuest(sessionID, guestUserID string) error
 	EndSession(sessionID string) error
+	RegenerateCode(sessionID string) (*Session, error)
+	RevokeCode(sessionID string) (*Session, error)
+	SetAllowNewJoins(sessionID string, allow bool) (*Session, error)
 
 	// Guest
 	JoinSession(code string, guestUserID string, guestInfo GuestInfo) (*JoinResult, error)
@@ -67,16 +70,18 @@ const (
 
 // Session representa uma sessão de colaboração P2P
 type Session struct {
-	ID         string         `json:"id"`
-	Code       string         `json:"code"` // Short code ex: "X92-B4"
-	HostUserID string         `json:"hostUserID"`
-	HostName   string         `json:"hostName"`
-	Status     SessionStatus  `json:"status"`
-	Mode       SessionMode    `json:"mode"`
-	Guests     []SessionGuest `json:"guests"`
-	CreatedAt  time.Time      `json:"createdAt"`
-	ExpiresAt  time.Time      `json:"expiresAt"` // Code expira
-	Config     SessionConfig  `json:"config"`
+	ID            string         `json:"id"`
+	Code          string         `json:"code"` // Short code ex: "X92B-4K7"
+	AllowNewJoins bool           `json:"allowNewJoins"`
+	HostUserID    string         `json:"hostUserID"`
+	HostName      string         `json:"hostName"`
+	HostAvatarURL string         `json:"hostAvatarUrl,omitempty"`
+	Status        SessionStatus  `json:"status"`
+	Mode          SessionMode    `json:"mode"`
+	Guests        []SessionGuest `json:"guests"`
+	CreatedAt     time.Time      `json:"createdAt"`
+	ExpiresAt     time.Time      `json:"expiresAt"` // Code expira
+	Config        SessionConfig  `json:"config"`
 
 	mu sync.RWMutex `json:"-"`
 }
@@ -144,6 +149,7 @@ type SignalMessage struct {
 type SignalingSession struct {
 	SessionID     string
 	HostSDP       string              // SDP Offer do Host
+	HostOffers    map[string]string   // targetUserID → SDP Offer pendente
 	GuestSDPs     map[string]string   // userID → SDP Answer
 	ICECandidates map[string][]string // userID → ICE candidates
 }
@@ -176,4 +182,34 @@ type SessionEvent struct {
 	Type      string      `json:"type"`
 	SessionID string      `json:"sessionID"`
 	Data      interface{} `json:"data,omitempty"`
+}
+
+const (
+	JoinSecurityEventInvalidAttempt = "session:join_invalid_attempt"
+	JoinSecurityEventBlocked        = "session:join_blocked"
+)
+
+// JoinSecurityEvent representa telemetria de segurança para tentativas de join.
+type JoinSecurityEvent struct {
+	SessionID         string    `json:"sessionID,omitempty"`
+	GuestUserID       string    `json:"guestUserID"`
+	Reason            string    `json:"reason"`
+	Attempt           int       `json:"attempt"`
+	MaxAttempts       int       `json:"maxAttempts"`
+	RetryAfterSeconds int       `json:"retryAfterSeconds,omitempty"`
+	Locked            bool      `json:"locked"`
+	OccurredAt        time.Time `json:"occurredAt"`
+}
+
+// JoinSecurityMetrics agrega indicadores de tentativas inválidas/bloqueadas.
+type JoinSecurityMetrics struct {
+	InvalidAttemptsTotal        int       `json:"invalidAttemptsTotal"`
+	InvalidFormatAttemptsTotal  int       `json:"invalidFormatAttemptsTotal"`
+	UnknownCodeAttemptsTotal    int       `json:"unknownCodeAttemptsTotal"`
+	MissingSessionAttemptsTotal int       `json:"missingSessionAttemptsTotal"`
+	BlockedAttemptsTotal        int       `json:"blockedAttemptsTotal"`
+	LockoutsTotal               int       `json:"lockoutsTotal"`
+	ActiveLocks                 int       `json:"activeLocks"`
+	LastInvalidAttemptAt        time.Time `json:"lastInvalidAttemptAt,omitempty"`
+	LastBlockedAt               time.Time `json:"lastBlockedAt,omitempty"`
 }

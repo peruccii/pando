@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Loader2 } from 'lucide-react'
 import { useSession } from '../hooks/useSession'
+import {
+  isSessionCodeReady,
+  normalizeSessionCode,
+  sanitizeSessionCodeInput,
+} from '../sessionCode'
 import './JoinSessionDialog.css'
 
 interface JoinSessionDialogProps {
@@ -19,8 +24,17 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
   const [remainingSeconds, setRemainingSeconds] = useState(5 * 60)
 
   const waitingCode = useMemo(() => {
-    return joinResult?.sessionCode || code
+    return joinResult?.sessionCode || normalizeSessionCode(code)
   }, [code, joinResult?.sessionCode])
+
+  const isCodeReady = useMemo(() => {
+    return isSessionCodeReady(code)
+  }, [code])
+
+  const codePreviewSlots = useMemo(() => {
+    const compact = normalizeSessionCode(code).replace(/-/g, '').slice(0, 7)
+    return compact.padEnd(7, ' ').split('')
+  }, [code])
 
   useEffect(() => {
     if (!isWaitingApproval) {
@@ -47,7 +61,7 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!code.trim()) return
+    if (!isSessionCodeReady(code)) return
 
     try {
       await joinSession(code.trim(), name.trim() || undefined)
@@ -74,17 +88,31 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
     onClose()
   }
 
-  // Formatação automática do código (XXX-YY)
+  // Formatação automática do código (XXXX-XXX). Mantém legado XXX-YY quando o usuário digita com hífen.
   const handleCodeChange = (value: string) => {
-    // Remover caracteres inválidos e formatar
-    const cleaned = value.toUpperCase().replace(/[^A-Z0-9-]/g, '')
+    const cleaned = sanitizeSessionCodeInput(value)
 
-    // Auto-inserir hífen após 3 caracteres
-    if (cleaned.length === 3 && !cleaned.includes('-') && code.length < cleaned.length) {
-      setCode(cleaned + '-')
-    } else if (cleaned.length <= 6) {
-      setCode(cleaned)
+    if (cleaned.includes('-')) {
+      const [leftRaw = '', rightRaw = ''] = cleaned.split('-', 2)
+      const legacyStyle = leftRaw.length <= 3
+      const leftLen = legacyStyle ? 3 : 4
+      const rightLen = legacyStyle ? 2 : 3
+      const left = leftRaw.replace(/-/g, '').slice(0, leftLen)
+      const right = rightRaw.replace(/-/g, '').slice(0, rightLen)
+      setCode(right.length > 0 || cleaned.endsWith('-') ? `${left}-${right}` : left)
+      return
     }
+
+    const compact = cleaned.replace(/-/g, '').slice(0, 7)
+    if (compact.length === 4 && code.length < compact.length) {
+      setCode(`${compact}-`)
+      return
+    }
+    if (compact.length > 4) {
+      setCode(`${compact.slice(0, 4)}-${compact.slice(4, 7)}`)
+      return
+    }
+    setCode(compact)
   }
 
   if (!isOpen) return null
@@ -133,20 +161,30 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
               <label className="join-dialog__label" htmlFor="session-code">
                 Session Code
               </label>
+              <div className="join-dialog__code-preview" aria-hidden="true">
+                <span className={`join-dialog__code-slot ${codePreviewSlots[0].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[0]}</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[1].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[1]}</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[2].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[2]}</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[3].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[3]}</span>
+                <span className="join-dialog__code-separator">-</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[4].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[4]}</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[5].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[5]}</span>
+                <span className={`join-dialog__code-slot ${codePreviewSlots[6].trim() ? 'join-dialog__code-slot--filled' : ''}`}>{codePreviewSlots[6]}</span>
+              </div>
               <input
                 id="session-code"
                 className="input input--mono join-dialog__code-input"
                 type="text"
                 value={code}
                 onChange={(e) => handleCodeChange(e.target.value)}
-                placeholder="XXX-YY"
-                maxLength={6}
+                placeholder="XXXX-XXX"
+                maxLength={8}
                 autoFocus
                 autoComplete="off"
                 spellCheck={false}
               />
               <p className="join-dialog__hint">
-                Ask the host for the 5-character session code
+                Ask the host for the invite code (`XXXX-XXX` or legacy `XXX-YY`)
               </p>
             </div>
 
@@ -174,7 +212,7 @@ export function JoinSessionDialog({ isOpen, onClose }: JoinSessionDialogProps) {
               <button
                 type="submit"
                 className="btn btn--primary"
-                disabled={isLoading || code.length < 5}
+                disabled={isLoading || !isCodeReady}
               >
                 {isLoading ? 'Joining...' : 'Join Session'}
               </button>

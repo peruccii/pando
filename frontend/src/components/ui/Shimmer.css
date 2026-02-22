@@ -1,0 +1,42 @@
+@keyframes shimmer-move {
+  0% {
+    background-position: 100% center;
+  }
+  100% {
+    background-position: 0% center;
+  }
+}
+
+.shimmer-text {
+  /* Default variables - can be overridden by props via inline style */
+  --shimmer-spread: 20px;
+  --shimmer-duration: 2s;
+  
+  /* Colors */
+  --shimmer-base-color: var(--text-secondary);
+  --shimmer-highlight-color: var(--text-primary);
+  
+  display: inline-block;
+  position: relative;
+  
+  /* 
+     Layer 1 (Top): Shimmer gradient. Transparent at ends, highlight in middle.
+     Layer 2 (Bottom): Base color.
+  */
+  background-image: 
+    linear-gradient(
+      90deg,
+      transparent calc(50% - var(--shimmer-spread)),
+      var(--shimmer-highlight-color) 50%,
+      transparent calc(50% + var(--shimmer-spread))
+    ),
+    linear-gradient(var(--shimmer-base-color), var(--shimmer-base-color));
+    
+  background-size: 250% 100%, auto;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  
+  animation: shimmer-move var(--shimmer-duration) linear infinite;
+}

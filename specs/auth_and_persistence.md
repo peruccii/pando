@@ -199,7 +199,7 @@ type ChatHistory struct {
 
 type SessionHistory struct {
     gorm.Model
-    SessionCode string // "X92-B4"
+    SessionCode string // "X92B-4K7"
     HostUserID  string
     StartedAt   time.Time
     EndedAt     *time.Time

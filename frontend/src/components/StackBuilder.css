@@ -94,12 +94,12 @@
 .tool-card--selected {
     background: rgba(var(--accent-rgb), 0.08);
     border-color: var(--accent-color);
-    box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.1);
+    box-shadow: none;
 }
 
 .tool-card--selected:hover {
     transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(var(--accent-rgb), 0.15);
+    box-shadow: none;
 }
 
 .tool-card--locked {
@@ -210,6 +210,13 @@
     color: #c9d1d9;
     display: flex;
     flex-direction: column;
+    /* Hide scrollbar for Chrome, Safari and Opera */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none;  /* IE and Edge */
+}
+
+.build-console::-webkit-scrollbar {
+    display: none;
 }
 
 .log-line {

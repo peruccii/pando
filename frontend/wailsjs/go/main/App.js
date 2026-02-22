@@ -338,6 +338,10 @@ export function SessionGetICEServers() {
   return window['go']['main']['App']['SessionGetICEServers']();
 }
 
+export function SessionGetJoinSecurityMetrics() {
+  return window['go']['main']['App']['SessionGetJoinSecurityMetrics']();
+}
+
 export function SessionGetSession(arg1) {
   return window['go']['main']['App']['SessionGetSession'](arg1);
 }
@@ -358,12 +362,24 @@ export function SessionListPendingGuests(arg1) {
   return window['go']['main']['App']['SessionListPendingGuests'](arg1);
 }
 
+export function SessionRegenerateCode(arg1) {
+  return window['go']['main']['App']['SessionRegenerateCode'](arg1);
+}
+
 export function SessionRejectGuest(arg1, arg2) {
   return window['go']['main']['App']['SessionRejectGuest'](arg1, arg2);
 }
 
 export function SessionRestartEnvironment(arg1) {
   return window['go']['main']['App']['SessionRestartEnvironment'](arg1);
+}
+
+export function SessionRevokeCode(arg1) {
+  return window['go']['main']['App']['SessionRevokeCode'](arg1);
+}
+
+export function SessionSetAllowNewJoins(arg1, arg2) {
+  return window['go']['main']['App']['SessionSetAllowNewJoins'](arg1, arg2);
 }
 
 export function SessionSetGuestPermission(arg1, arg2, arg3) {

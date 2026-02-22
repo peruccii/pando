@@ -435,6 +435,16 @@ export class P2PConnection {
       }
 
       this.ws.onerror = (err) => {
+        const currentWS = this.ws
+        if (
+          this.isDestroyed ||
+          !currentWS ||
+          currentWS.readyState === WebSocket.CLOSING ||
+          currentWS.readyState === WebSocket.CLOSED
+        ) {
+          console.log('[P2P] Ignoring signaling error after close')
+          return
+        }
         console.error('[P2P] Signaling error:', err)
         reject(err)
       }
@@ -672,6 +682,21 @@ export class P2PConnection {
     }
 
     dc.onerror = (err) => {
+      if (this.isDestroyed || dc.readyState === 'closing' || dc.readyState === 'closed') {
+        console.log(`[P2P] Ignoring data channel ${dc.label} error after close (peer=${peerID})`)
+        return
+      }
+
+      const rtcError = (err as { error?: { message?: string } } | null)?.error
+      const message = typeof rtcError?.message === 'string' ? rtcError.message.toLowerCase() : ''
+      const isCloseAbort =
+        message.includes('user-initiated abort') ||
+        message.includes('close called')
+      if (isCloseAbort) {
+        console.log(`[P2P] Data channel ${dc.label} aborted during close (peer=${peerID})`)
+        return
+      }
+
       console.error(`[P2P] Data channel ${dc.label} error (peer=${peerID}):`, err)
     }
   }
