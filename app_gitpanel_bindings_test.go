@@ -57,3 +57,20 @@ func TestGitPanelOpenExternalMergeToolRequiresService(t *testing.T) {
 		t.Fatalf("unexpected error code: got=%s want=%s", bindingErr.Code, gp.CodeServiceUnavailable)
 	}
 }
+
+func TestGitPanelPickRepositoryDirectoryRequiresRuntimeContext(t *testing.T) {
+	app := NewApp()
+
+	_, err := app.GitPanelPickRepositoryDirectory("/tmp")
+	if err == nil {
+		t.Fatalf("expected error when runtime context is not initialized")
+	}
+
+	bindingErr := gp.AsBindingError(err)
+	if bindingErr == nil {
+		t.Fatalf("expected binding error, got: %v", err)
+	}
+	if bindingErr.Code != gp.CodeServiceUnavailable {
+		t.Fatalf("unexpected error code: got=%s want=%s", bindingErr.Code, gp.CodeServiceUnavailable)
+	}
+}

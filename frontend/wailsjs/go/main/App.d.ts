@@ -151,6 +151,8 @@ export function GitPanelGetStatus(arg1:string):Promise<gitpanel.StatusDTO>;
 
 export function GitPanelOpenExternalMergeTool(arg1:string,arg2:string):Promise<void>;
 
+export function GitPanelPickRepositoryDirectory(arg1:string):Promise<string>;
+
 export function GitPanelPreflight(arg1:string):Promise<gitpanel.PreflightResult>;
 
 export function GitPanelStageFile(arg1:string,arg2:string):Promise<void>;

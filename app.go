@@ -2784,6 +2784,118 @@ func (a *App) GitPanelPreflight(repoPath string) (gp.PreflightResult, error) {
 	return result, nil
 }
 
+// GitPanelPickRepositoryDirectory abre o seletor nativo para escolher diretório do repositório.
+func (a *App) GitPanelPickRepositoryDirectory(defaultPath string) (string, error) {
+	if a.ctx == nil {
+		return "", gp.NewBindingError(
+			gp.CodeServiceUnavailable,
+			"Janela indisponível para seleção de diretório.",
+			"Contexto do runtime ainda não foi inicializado.",
+		)
+	}
+
+	defaultDirectory := resolveExistingDirectory(defaultPath)
+	selectedViaAppleScript, appleScriptErr := pickDirectoryWithAppleScript("Selecionar repositório Git", defaultDirectory)
+	if appleScriptErr == nil {
+		return strings.TrimSpace(selectedViaAppleScript), nil
+	}
+
+	options := runtime.OpenDialogOptions{
+		Title:                "Selecionar repositório Git",
+		ShowHiddenFiles:      true,
+		CanCreateDirectories: true,
+	}
+	if defaultDirectory != "" {
+		options.DefaultDirectory = defaultDirectory
+	}
+
+	selectedPath, err := runtime.OpenDirectoryDialog(a.ctx, options)
+	if err != nil {
+		details := strings.TrimSpace(err.Error())
+		if appleScriptErr != nil && !errors.Is(appleScriptErr, exec.ErrNotFound) {
+			details = fmt.Sprintf("apple script: %s | runtime: %s", strings.TrimSpace(appleScriptErr.Error()), details)
+		}
+		return "", gp.NewBindingError(
+			gp.CodeCommandFailed,
+			"Falha ao abrir seletor de diretório.",
+			details,
+		)
+	}
+
+	return strings.TrimSpace(selectedPath), nil
+}
+
+func resolveExistingDirectory(rawPath string) string {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" {
+		return ""
+	}
+
+	cleaned := filepath.Clean(trimmed)
+	info, err := os.Stat(cleaned)
+	if err == nil {
+		if info.IsDir() {
+			return cleaned
+		}
+		parent := filepath.Dir(cleaned)
+		if parentInfo, parentErr := os.Stat(parent); parentErr == nil && parentInfo.IsDir() {
+			return parent
+		}
+		return ""
+	}
+
+	parent := filepath.Dir(cleaned)
+	if parent == "" || parent == "." {
+		return ""
+	}
+	if parentInfo, parentErr := os.Stat(parent); parentErr == nil && parentInfo.IsDir() {
+		return parent
+	}
+	return ""
+}
+
+func pickDirectoryWithAppleScript(title string, defaultDirectory string) (string, error) {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return "", err
+	}
+
+	command := "set selectedFolder to choose folder"
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle != "" {
+		command += " with prompt " + quoteAppleScriptString(trimmedTitle)
+	}
+
+	trimmedDefault := strings.TrimSpace(defaultDirectory)
+	if trimmedDefault != "" {
+		command += " default location POSIX file " + quoteAppleScriptString(trimmedDefault)
+	}
+
+	output, err := exec.Command(
+		"osascript",
+		"-e", command,
+		"-e", "POSIX path of selectedFolder",
+	).CombinedOutput()
+	if err != nil {
+		details := strings.TrimSpace(string(output))
+		lowerDetails := strings.ToLower(details)
+		if strings.Contains(lowerDetails, "user canceled") || strings.Contains(lowerDetails, "user cancelled") {
+			return "", nil
+		}
+		if details == "" {
+			details = strings.TrimSpace(err.Error())
+		}
+		return "", errors.New(details)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+func quoteAppleScriptString(value string) string {
+	escaped := strings.ReplaceAll(value, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	return "\"" + escaped + "\""
+}
+
 // GitPanelGetStatus retorna snapshot de status staged/unstaged/conflicted.
 func (a *App) GitPanelGetStatus(repoPath string) (gp.StatusDTO, error) {
 	svc, err := a.requireGitPanelService()

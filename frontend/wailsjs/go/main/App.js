@@ -282,6 +282,10 @@ export function GitPanelOpenExternalMergeTool(arg1, arg2) {
   return window['go']['main']['App']['GitPanelOpenExternalMergeTool'](arg1, arg2);
 }
 
+export function GitPanelPickRepositoryDirectory(arg1) {
+  return window['go']['main']['App']['GitPanelPickRepositoryDirectory'](arg1);
+}
+
 export function GitPanelPreflight(arg1) {
   return window['go']['main']['App']['GitPanelPreflight'](arg1);
 }

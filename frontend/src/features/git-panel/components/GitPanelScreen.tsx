@@ -6,6 +6,7 @@ import {
   Clock3,
   ExternalLink,
   FileCode2,
+  FolderOpen,
   GitBranch,
   GitMerge,
   History,
@@ -22,6 +23,7 @@ import {
   GitPanelGetDiff,
   GitPanelGetHistory,
   GitPanelOpenExternalMergeTool,
+  GitPanelPickRepositoryDirectory,
   GitPanelGetStatus,
   GitPanelPreflight,
   GitPanelStageFile,
@@ -30,6 +32,7 @@ import {
 } from '../../../../wailsjs/go/main/App'
 import { useWorkspaceStore } from '../../../stores/workspaceStore'
 import './GitPanelScreen.css'
+import commitHorizontalIconSVG from '../assets/svg/git-commit-horizontal.svg?raw'
 
 interface GitPanelScreenProps {
   onBack: () => void
@@ -243,6 +246,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
   // Diff degradation state (load-anyway for truncated diffs)
   const [diffForceLoad, setDiffForceLoad] = useState(false)
   const [diffContextLines, setDiffContextLines] = useState(3)
+  const [isRepoPickerOpen, setIsRepoPickerOpen] = useState(false)
 
   const historyViewportRef = useRef<HTMLDivElement | null>(null)
   const sidebarRegionRef = useRef<HTMLElement | null>(null)
@@ -479,16 +483,16 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
       }
 
       const statusResult = statusRaw as unknown as GitPanelStatusDTO
-      const historyResult = historyRaw as unknown as GitPanelHistoryPageDTO
+      const historyResult = normalizeHistoryPage(historyRaw)
 
       setPreflight(preflightResult)
       setStatus(statusResult)
       setResolvedRepoPath(normalizedRepo)
-      setHistoryItems(historyResult.items ?? [])
+      setHistoryItems(historyResult.items)
       setHistoryCursor((historyResult.nextCursor || '').trim())
       setHistoryHasMore(Boolean(historyResult.hasMore))
       setSelectedCommitHash((previous) => {
-        const incoming = historyResult.items ?? []
+        const incoming = historyResult.items
         if (previous && incoming.some((item) => item.hash === previous)) {
           return previous
         }
@@ -532,8 +536,8 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     setIsHistoryLoadingMore(true)
     try {
       const nextPageRaw = await (GitPanelGetHistory as any)(resolvedRepoPath, historyCursor, HISTORY_PAGE_SIZE, debouncedHistorySearch)
-      const nextPage = nextPageRaw as unknown as GitPanelHistoryPageDTO
-      setHistoryItems((previous) => mergeHistoryItems(previous, nextPage.items ?? []))
+      const nextPage = normalizeHistoryPage(nextPageRaw)
+      setHistoryItems((previous) => mergeHistoryItems(previous, nextPage.items))
       setHistoryCursor((nextPage.nextCursor || '').trim())
       setHistoryHasMore(Boolean(nextPage.hasMore))
       setLastUpdatedAt(Date.now())
@@ -632,6 +636,30 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     event?.preventDefault()
     setActiveRepoPath(repoPathInput.trim())
   }, [repoPathInput])
+
+  const handlePickRepositoryDirectory = useCallback(async () => {
+    if (isRepoPickerOpen) {
+      return
+    }
+
+    setIsRepoPickerOpen(true)
+    try {
+      const defaultPath = repoPathInput.trim() || resolvedRepoPath.trim() || workspacePath.trim()
+      const selectedPath = await GitPanelPickRepositoryDirectory(defaultPath)
+      const normalizedPath = (selectedPath || '').trim()
+      if (normalizedPath === '') {
+        return
+      }
+
+      setRepoPathInput(normalizedPath)
+      setActiveRepoPath(normalizedPath)
+      setError(null)
+    } catch (err) {
+      setError(parseGitPanelError(err))
+    } finally {
+      setIsRepoPickerOpen(false)
+    }
+  }, [isRepoPickerOpen, repoPathInput, resolvedRepoPath, workspacePath])
 
   const handleRefSelection = useCallback((ref: QuickRefItem) => {
     setSelectedRefID(ref.id)
@@ -1156,6 +1184,12 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                 <p><strong>Hash:</strong> <code>{selectedCommit.hash}</code></p>
                 <p><strong>Autor:</strong> {selectedCommit.author}</p>
                 <p><strong>Data:</strong> {formatCommitDate(selectedCommit.authoredAt)}</p>
+                <p>
+                  <strong>Stats:</strong>{' '}
+                  {formatFilesChangedLabel(selectedCommit.changedFiles)} • +
+                  {formatMetricCount(selectedCommit.additions)} insertions • -
+                  {formatMetricCount(selectedCommit.deletions)} deletions
+                </p>
               </div>
             ) : (
               <p className="git-panel-inspector__empty">Selecione um commit para ver detalhes.</p>
@@ -1604,15 +1638,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
           title="Voltar (Esc)"
         >
           <ArrowLeft size={14} />
-          Voltar
         </button>
-
-        <div className="git-panel-screen__title-wrap">
-          <h1 className="git-panel-screen__title">Git Panel</h1>
-          <p className="git-panel-screen__subtitle">
-            Commit log profissional com refs, histórico linear e inspector de diff
-          </p>
-        </div>
 
         <form className="git-panel-screen__repo-form" onSubmit={handleRefresh}>
           <label className="git-panel-screen__repo-label" htmlFor="git-panel-repo-path">
@@ -1623,11 +1649,21 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
               id="git-panel-repo-path"
               className="input input--mono git-panel-screen__repo-input"
               value={repoPathInput}
-              onChange={(event) => setRepoPathInput(event.target.value)}
+              readOnly
               placeholder="/Users/.../repo"
               autoComplete="off"
               spellCheck={false}
             />
+            <button
+              className="btn btn--ghost git-panel-screen__refresh-btn"
+              type="button"
+              onClick={() => { void handlePickRepositoryDirectory() }}
+              disabled={isRepoPickerOpen}
+              aria-label="Selecionar pasta do repositório"
+            >
+              {isRepoPickerOpen ? <Loader2 size={13} className="git-panel-log__spinner" /> : <FolderOpen size={13} />}
+              Selecionar pasta
+            </button>
             <button className="btn btn--ghost git-panel-screen__refresh-btn" type="submit">
               <RefreshCw size={13} />
               Atualizar
@@ -1801,11 +1837,19 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                           <span className="git-panel-log__author-name">{resolveCommitActorLabel(row.item)}</span>
                         </div>
                         <div className="git-panel-log__row-meta">
-                          <code>{row.item.shortHash}</code>
+                          <span className="git-panel-log__commit-hash">
+                            <span
+                              className="git-panel-log__commit-icon"
+                              aria-hidden="true"
+                              // SVG local estático do projeto (shape oficial de commit horizontal)
+                              dangerouslySetInnerHTML={{ __html: commitHorizontalIconSVG }}
+                            />
+                            <code>{row.item.shortHash}</code>
+                          </span>
                           <span>{formatCommitDate(row.item.authoredAt)}</span>
-                          <span className="git-panel-log__metric git-panel-log__metric--positive">+{formatMetricCount(row.item.additions)}</span>
-                          <span className="git-panel-log__metric git-panel-log__metric--negative">-{formatMetricCount(row.item.deletions)}</span>
-                          <span className="git-panel-log__metric">{formatFilesLabel(row.item.changedFiles)}</span>
+                          <span className="git-panel-log__metric">{formatFilesChangedLabel(row.item.changedFiles)}</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--positive">+{formatMetricCount(row.item.additions)} insertions</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--negative">-{formatMetricCount(row.item.deletions)} deletions</span>
                         </div>
                       </button>
                     )
@@ -2040,9 +2084,67 @@ function formatMetricCount(value: number): string {
   return safeValue.toLocaleString()
 }
 
-function formatFilesLabel(value: number): string {
+function formatFilesChangedLabel(value: number): string {
   const safeValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
-  return safeValue === 1 ? '1 file' : `${safeValue} files`
+  return safeValue === 1 ? '1 file changed' : `${safeValue} files changed`
+}
+
+function normalizeHistoryPage(raw: unknown): GitPanelHistoryPageDTO {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      items: [],
+      nextCursor: '',
+      hasMore: false,
+    }
+  }
+
+  const candidate = raw as Partial<GitPanelHistoryPageDTO>
+  const items = Array.isArray(candidate.items)
+    ? candidate.items.map((item) => normalizeHistoryItem(item))
+    : []
+
+  return {
+    items,
+    nextCursor: typeof candidate.nextCursor === 'string' ? candidate.nextCursor : '',
+    hasMore: Boolean(candidate.hasMore),
+  }
+}
+
+function normalizeHistoryItem(raw: unknown): GitPanelHistoryItem {
+  const item = (raw && typeof raw === 'object') ? (raw as Partial<GitPanelHistoryItem> & { filesChanged?: unknown }) : {}
+  const additions = parsePositiveInt(item.additions)
+  const deletions = parsePositiveInt(item.deletions)
+  const changedFiles = parsePositiveInt(item.changedFiles ?? item.filesChanged)
+
+  return {
+    hash: typeof item.hash === 'string' ? item.hash : '',
+    shortHash: typeof item.shortHash === 'string' ? item.shortHash : '',
+    author: typeof item.author === 'string' ? item.author : '',
+    authoredAt: typeof item.authoredAt === 'string' ? item.authoredAt : '',
+    subject: typeof item.subject === 'string' ? item.subject : '',
+    additions,
+    deletions,
+    changedFiles,
+    githubLogin: typeof item.githubLogin === 'string' ? item.githubLogin : undefined,
+    githubAvatarUrl: typeof item.githubAvatarUrl === 'string' ? item.githubAvatarUrl : undefined,
+  }
+}
+
+function parsePositiveInt(value: unknown): number {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return 0
+    }
+    return Math.max(0, Math.trunc(value))
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isFinite(parsed)) {
+      return 0
+    }
+    return Math.max(0, Math.trunc(parsed))
+  }
+  return 0
 }
 
 function mergeHistoryItems(current: GitPanelHistoryItem[], incoming: GitPanelHistoryItem[]): GitPanelHistoryItem[] {

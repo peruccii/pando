@@ -239,6 +239,7 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
 
       GitPanelPreflight: async () => ({ ...state.preflight }),
       GitPanelGetStatus: async () => JSON.parse(JSON.stringify(state.status)),
+      GitPanelPickRepositoryDirectory: async (_defaultPath?: string) => '/mock/repo',
       GitPanelGetHistory: async (_repoPath: string, cursor: string, limit: number, query: string) => {
         const normalizedQuery = (query ?? '').trim().toLowerCase()
         const filtered = normalizedQuery
