@@ -62,6 +62,7 @@
 [x] Implementar testes E2E de fluxo completo (happy path, conflito, concorrencia write, arquivo grande/binario) - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
 [x] Validar readiness final por fase com KPIs, riscos abertos e criterio de aceite concluido - [git_specs/roadmap_delivery.md](git_specs/roadmap_delivery.md)  
 
+
 ## Gates finais (obrigatorio para marcar rollout)
 
 [] `go test ./...` verde no CI e local - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
