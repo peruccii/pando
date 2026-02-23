@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:frontend": "playwright test e2e/git-panel-ui.spec.ts",
+    "test:e2e:gitpanel": "playwright test e2e/git-panel-flow.spec.ts",
     "e2e": "playwright test"
   },
   "dependencies": {

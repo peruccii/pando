@@ -6,7 +6,7 @@ import type { MosaicNode } from 'react-mosaic-component'
 export type PaneStatus = 'idle' | 'running' | 'error'
 
 /** Tipo de painel */
-export type PaneType = 'terminal' | 'ai_agent' | 'github'
+export type PaneType = 'terminal' | 'ai_agent'
 export type PaneDropPosition = 'left' | 'right' | 'top' | 'bottom' | 'center'
 
 /** Informações de um painel no grid */

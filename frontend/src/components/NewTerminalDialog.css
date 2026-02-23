@@ -116,6 +116,8 @@
     color: #fff;
     box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.3);
 }
+
+.new-terminal-card--disabled {
     opacity: 0.6;
     cursor: not-allowed;
     filter: grayscale(0.5);

@@ -186,7 +186,7 @@ export function PaneHeader({ paneId, title, status, type, isActive }: PaneHeader
   }, [canSwapWithPayload, isGuestScoped, paneId, setActivePaneId, swapPanePositions])
 
   /** Ícone do tipo de painel */
-  const typeIcon = type === 'terminal' ? '⌘' : type === 'ai_agent' ? '🤖' : '🐙'
+  const typeIcon = type === 'terminal' ? '⌘' : '🤖'
 
   return (
     <div

@@ -5,7 +5,6 @@ import { useLayoutStore } from '../stores/layoutStore'
 import { PaneHeader } from './PaneHeader'
 import { TerminalPane } from './TerminalPane'
 import { AIAgentPane } from './AIAgentPane'
-import { GitHubPane } from './GitHubPane'
 import { ZenModeOverlay } from './ZenModeOverlay'
 import {
   hasTerminalWorkspaceDragPayload,
@@ -227,9 +226,6 @@ export function CommandCenter() {
             )}
             {pane.type === 'ai_agent' && (
               <AIAgentPane paneId={id} isActive={isActive} />
-            )}
-            {pane.type === 'github' && (
-              <GitHubPane paneId={id} isActive={isActive} />
             )}
 
             {isDropOverlayVisible && (

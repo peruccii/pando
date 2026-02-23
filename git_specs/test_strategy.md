@@ -50,3 +50,8 @@ Definir cobertura minima para garantir qualidade do Git Panel em cenarios reais.
 - e2e critico rodando antes de release
 - regressao de performance bloqueia merge quando ultrapassa budget acordado
 
+## 7. Suites implementadas (referencia)
+
+- backend: `go test ./...`
+- frontend git panel: `npm --prefix frontend run test:frontend`
+- e2e git panel: `npm --prefix frontend run test:e2e:gitpanel`

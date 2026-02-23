@@ -17,12 +17,14 @@ Estabelecer budgets de performance e regras de resiliencia para o Git Panel.
 - carregamento lazy de diff/hunks
 - parsing incremental (streaming) no backend
 - cache leve de estado atual com invalidacao por eventos
+- cache curto para `preflight/status/history/diff` com invalidação em eventos/write
 
 ## 4. Fallbacks
 
 - arquivo > 1MB: nao carregar preview automaticamente
 - arquivo binario: sem renderizacao textual
 - erro de parser diff: fallback para raw text
+- timeout de diff/historico: retornar payload degradado acionavel em vez de hard-fail da tela
 
 ## 5. Confiabilidade
 
@@ -36,4 +38,3 @@ Estabelecer budgets de performance e regras de resiliencia para o Git Panel.
 - sem freeze perceptivel com 10k+ commits no historico
 - sem condicao de corrida write/write no mesmo repo
 - sem regressao de CPU por burst de eventos `.git`
-

@@ -118,18 +118,27 @@ export function App() {
     }
 
     return (
-        <div className={`app ${isBroadcastActive ? 'app--broadcast-active' : ''}`}>
+        <div className={`app ${isBroadcastActive ? 'app--broadcast-active' : ''} ${isGitPanelOpen ? 'app--git-open' : ''}`}>
             <Titlebar />
             <TabBar />
             <main className="app__main">
-                {isGitPanelOpen ? (
-                    <GitPanelScreen onBack={() => setIsGitPanelOpen(false)} />
-                ) : hasPanes ? (
-                    <ErrorBoundary onReset={handleLayoutError}>
-                        <CommandCenter />
-                    </ErrorBoundary>
-                ) : (
-                    <EmptyState version={version} />
+                <div
+                    className={`app__main-content ${isGitPanelOpen ? 'app__main-content--hidden' : ''}`}
+                    aria-hidden={isGitPanelOpen}
+                >
+                    {hasPanes ? (
+                        <ErrorBoundary onReset={handleLayoutError}>
+                            <CommandCenter />
+                        </ErrorBoundary>
+                    ) : (
+                        <EmptyState version={version} />
+                    )}
+                </div>
+
+                {isGitPanelOpen && (
+                    <div className="app__git-overlay" role="dialog" aria-modal="true">
+                        <GitPanelScreen onBack={() => setIsGitPanelOpen(false)} />
+                    </div>
                 )}
             </main>
 

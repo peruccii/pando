@@ -3,7 +3,6 @@ import { useLayoutStore } from '../stores/layoutStore'
 import { useZenMode } from '../hooks/useZenMode'
 import { TerminalPane } from './TerminalPane'
 import { AIAgentPane } from './AIAgentPane'
-import { GitHubPane } from './GitHubPane'
 import { PaneHeader } from './PaneHeader'
 import './ZenModeOverlay.css'
 
@@ -54,9 +53,6 @@ export function ZenModeOverlay({ paneId }: ZenModeOverlayProps) {
         )}
         {pane.type === 'ai_agent' && (
           <AIAgentPane paneId={`${paneId}-zen`} isActive={true} />
-        )}
-        {pane.type === 'github' && (
-          <GitHubPane paneId={`${paneId}-zen`} isActive={true} />
         )}
       </div>
     </div>

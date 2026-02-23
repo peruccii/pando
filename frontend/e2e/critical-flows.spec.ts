@@ -11,6 +11,8 @@ test.describe('Critical Flows', () => {
     await expect(page.locator('#btn-new-terminal')).toBeVisible()
 
     await page.locator('#btn-new-terminal').click()
+    await expect(page.getByRole('heading', { name: /Novo Terminal|New Terminal/ })).toBeVisible()
+    await page.getByText(/Terminal Local|Local Terminal/).first().click()
     await expect(page.locator('#command-center')).toBeVisible()
   })
 

@@ -43,7 +43,7 @@ type AgentSession struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	WorkspaceID uint      `gorm:"index;not null" json:"workspaceId"`
 	Name        string    `gorm:"not null" json:"name"`
-	Type        string    `gorm:"default:terminal" json:"type"` // "terminal" | "ai_agent" | "github"
+	Type        string    `gorm:"default:terminal" json:"type"` // "terminal" | "ai_agent" (legacy: "github")
 	Shell       string    `gorm:"default:/bin/zsh" json:"shell"`
 	Cwd         string    `gorm:"default:''" json:"cwd"`
 	UseDocker   bool      `gorm:"default:false" json:"useDocker"`

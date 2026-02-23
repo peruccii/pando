@@ -5,7 +5,6 @@ export { CommandCenter } from './components/CommandCenter'
 export { PaneHeader } from './components/PaneHeader'
 export { TerminalPane } from './components/TerminalPane'
 export { AIAgentPane } from './components/AIAgentPane'
-export { GitHubPane } from './components/GitHubPane'
 export { ZenModeOverlay } from './components/ZenModeOverlay'
 
 // Hooks

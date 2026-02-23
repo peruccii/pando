@@ -67,11 +67,13 @@ const normalizePaneType = (type: string): PaneType => {
   switch (type) {
     case 'ai_agent':
       return 'ai_agent'
-    case 'github':
-      return 'github'
     default:
       return 'terminal'
   }
+}
+
+const isLegacyGitHubAgent = (type: string): boolean => {
+  return type.trim().toLowerCase() === 'github'
 }
 
 const normalizePaneStatus = (status: string): PaneStatus => {
@@ -145,6 +147,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
   let snapshotCacheLoaded = false
   let snapshotCacheLoadPromise: Promise<void> | null = null
   let pendingSnapshotsByPaneID: Record<string, TerminalSnapshotDTO> = {}
+  let legacyGitHubMigrationOpened = false
 
   const ensureSnapshotCache = async () => {
     if (snapshotCacheLoaded) {
@@ -200,7 +203,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set,
       return
     }
 
-    const orderedAgents = [...workspace.agents].sort((a, b) => {
+    const legacyGitHubAgents = workspace.agents.filter((agent) => isLegacyGitHubAgent(agent.type))
+    if (legacyGitHubAgents.length > 0 && !legacyGitHubMigrationOpened) {
+      legacyGitHubMigrationOpened = true
+      window.dispatchEvent(new CustomEvent('git-panel:open'))
+    }
+
+    const visibleAgents = workspace.agents.filter((agent) => !isLegacyGitHubAgent(agent.type))
+
+    const orderedAgents = [...visibleAgents].sort((a, b) => {
       if (a.sortOrder !== b.sortOrder) {
         return a.sortOrder - b.sortOrder
       }

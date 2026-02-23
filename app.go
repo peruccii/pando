@@ -28,6 +28,7 @@ import (
 	fw "orch/internal/filewatcher"
 	ga "orch/internal/gitactivity"
 	gh "orch/internal/github"
+	gp "orch/internal/gitpanel"
 	"orch/internal/security"
 	"orch/internal/session"
 	"orch/internal/terminal"
@@ -40,7 +41,28 @@ const (
 	defaultSessionGatewayBaseURL      = "http://127.0.0.1:9888"
 	defaultSessionSignalingListenAddr = "127.0.0.1:9876"
 	defaultSessionSignalingBaseURL    = "ws://127.0.0.1:9876/ws/signal"
+	gitPanelEventDebounceWindow       = 120 * time.Millisecond
 )
+
+type gitPanelInvalidationPlan struct {
+	Status    bool
+	History   bool
+	Conflicts bool
+}
+
+func (p gitPanelInvalidationPlan) isZero() bool {
+	return !p.Status && !p.History && !p.Conflicts
+}
+
+type gitPanelPendingInvalidation struct {
+	repoPath    string
+	sourceEvent string
+	reason      string
+	status      bool
+	history     bool
+	conflicts   bool
+	timer       *time.Timer
+}
 
 // App struct — ponto central do Wails, conecta todos os services
 type App struct {
@@ -53,6 +75,7 @@ type App struct {
 	github      *gh.Service
 	fileWatcher *fw.Service
 	gitActivity *ga.Service
+	gitPanel    *gp.Service
 	poller      *gh.Poller
 	session     *session.Service
 	signaling   *session.SignalingService
@@ -76,6 +99,8 @@ type App struct {
 
 	gitIndexMu            sync.Mutex
 	lastIndexFingerprints map[string]string // repoPath -> fingerprint do estado staged
+	gitPanelEventsMu      sync.Mutex
+	gitPanelPendingEvents map[string]*gitPanelPendingInvalidation
 	anonymousGuestID      string
 	sessionGatewayOwner   bool
 	sessionGatewayAddr    string
@@ -91,6 +116,7 @@ func NewApp() *App {
 		terminalHistory:       make(map[string]string),
 		sessionAgents:         make(map[string]uint),
 		lastIndexFingerprints: make(map[string]string),
+		gitPanelPendingEvents: make(map[string]*gitPanelPendingInvalidation),
 		anonymousGuestID:      fmt.Sprintf("anonymous-%d", time.Now().UnixNano()),
 	}
 }
@@ -156,6 +182,12 @@ func (a *App) Startup(ctx context.Context) {
 	// 6.1 Inicializar serviço de atividade Git (timeline em memória)
 	a.gitActivity = ga.NewService(200, 900*time.Millisecond)
 	log.Println("[ORCH] GitActivity service initialized")
+
+	// 6.2 Inicializar serviço dedicado do Git Panel (read/write/eventos)
+	a.gitPanel = gp.NewService(func(eventName string, data interface{}) {
+		a.emitGitPanelRuntimeEvent(eventName, data)
+	})
+	log.Println("[ORCH] GitPanel service initialized")
 
 	// 7. Inicializar File Watcher
 	fwService, err := fw.NewService(func(eventName string, data interface{}) {
@@ -379,7 +411,185 @@ func findGitRepoRoot(startPath string) string {
 
 func (a *App) emitGitRuntimeEvent(eventName string, data interface{}) {
 	runtime.EventsEmit(a.ctx, eventName, data)
+	a.bridgeLegacyGitEventToGitPanel(eventName, data)
 	a.appendGitActivityFromRuntimeEvent(eventName, data)
+}
+
+func (a *App) emitGitPanelRuntimeEvent(eventName string, data interface{}) {
+	runtime.EventsEmit(a.ctx, eventName, data)
+}
+
+func (a *App) bridgeLegacyGitEventToGitPanel(eventName string, data interface{}) {
+	plan := mapLegacyGitEventToGitPanelInvalidation(eventName)
+	if plan.isZero() {
+		return
+	}
+
+	repoPath := extractRepoPathFromGitEventData(data)
+	a.queueGitPanelInvalidation(repoPath, eventName, "filewatcher_bridge", plan)
+}
+
+func mapLegacyGitEventToGitPanelInvalidation(eventName string) gitPanelInvalidationPlan {
+	switch strings.TrimSpace(eventName) {
+	case "git:index":
+		return gitPanelInvalidationPlan{Status: true}
+	case "git:merge":
+		return gitPanelInvalidationPlan{Status: true, Conflicts: true}
+	case "git:branch_changed":
+		return gitPanelInvalidationPlan{Status: true, History: true}
+	case "git:commit":
+		return gitPanelInvalidationPlan{Status: true, History: true}
+	case "git:fetch":
+		return gitPanelInvalidationPlan{Status: true}
+	default:
+		return gitPanelInvalidationPlan{}
+	}
+}
+
+func (a *App) queueGitPanelInvalidation(repoPath string, sourceEvent string, reason string, plan gitPanelInvalidationPlan) {
+	if plan.isZero() {
+		return
+	}
+
+	key, normalizedRepoPath := normalizeGitPanelInvalidationRepo(repoPath)
+
+	a.gitPanelEventsMu.Lock()
+	pending, exists := a.gitPanelPendingEvents[key]
+	if !exists {
+		pending = &gitPanelPendingInvalidation{
+			repoPath: normalizedRepoPath,
+		}
+		a.gitPanelPendingEvents[key] = pending
+	}
+
+	pending.repoPath = normalizedRepoPath
+	pending.sourceEvent = strings.TrimSpace(sourceEvent)
+	pending.reason = strings.TrimSpace(reason)
+	pending.status = pending.status || plan.Status
+	pending.history = pending.history || plan.History
+	pending.conflicts = pending.conflicts || plan.Conflicts
+
+	if pending.timer == nil {
+		pending.timer = time.AfterFunc(gitPanelEventDebounceWindow, func() {
+			a.flushGitPanelInvalidation(key)
+		})
+	}
+	a.gitPanelEventsMu.Unlock()
+}
+
+func (a *App) flushGitPanelInvalidation(key string) {
+	a.gitPanelEventsMu.Lock()
+	pending, exists := a.gitPanelPendingEvents[key]
+	if !exists {
+		a.gitPanelEventsMu.Unlock()
+		return
+	}
+	delete(a.gitPanelPendingEvents, key)
+	if pending.timer != nil {
+		pending.timer.Stop()
+		pending.timer = nil
+	}
+
+	repoPath := pending.repoPath
+	sourceEvent := pending.sourceEvent
+	reason := pending.reason
+	status := pending.status
+	history := pending.history
+	conflicts := pending.conflicts
+	a.gitPanelEventsMu.Unlock()
+
+	a.emitGitPanelInvalidationEvents(repoPath, sourceEvent, reason, status, history, conflicts)
+}
+
+func (a *App) emitGitPanelInvalidationEvents(repoPath string, sourceEvent string, reason string, status bool, history bool, conflicts bool) {
+	if a.ctx == nil {
+		return
+	}
+	if !status && !history && !conflicts {
+		return
+	}
+	if a.gitPanel != nil {
+		a.gitPanel.InvalidateRepoCache(repoPath)
+	}
+
+	basePayload := map[string]string{
+		"repoPath":    strings.TrimSpace(repoPath),
+		"sourceEvent": strings.TrimSpace(sourceEvent),
+		"reason":      strings.TrimSpace(reason),
+	}
+
+	if status {
+		runtime.EventsEmit(a.ctx, "gitpanel:status_changed", cloneGitPanelEventPayload(basePayload))
+	}
+	if history {
+		runtime.EventsEmit(a.ctx, "gitpanel:history_invalidated", cloneGitPanelEventPayload(basePayload))
+	}
+	if conflicts {
+		runtime.EventsEmit(a.ctx, "gitpanel:conflicts_changed", cloneGitPanelEventPayload(basePayload))
+	}
+}
+
+func (a *App) stopGitPanelEventBridge() {
+	a.gitPanelEventsMu.Lock()
+	defer a.gitPanelEventsMu.Unlock()
+
+	for key, pending := range a.gitPanelPendingEvents {
+		if pending != nil && pending.timer != nil {
+			pending.timer.Stop()
+			pending.timer = nil
+		}
+		delete(a.gitPanelPendingEvents, key)
+	}
+}
+
+func normalizeGitPanelInvalidationRepo(repoPath string) (string, string) {
+	trimmed := strings.TrimSpace(repoPath)
+	if trimmed == "" {
+		return "__global__", ""
+	}
+
+	cleaned := filepath.Clean(trimmed)
+	if cleaned == "." {
+		return "__global__", ""
+	}
+
+	return cleaned, cleaned
+}
+
+func cloneGitPanelEventPayload(payload map[string]string) map[string]string {
+	out := make(map[string]string, len(payload))
+	for key, value := range payload {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func extractRepoPathFromGitEventData(data interface{}) string {
+	if event, ok := toFileWatcherEvent(data); ok {
+		return extractRepoPathFromGitEventPath(event.Path)
+	}
+
+	switch payload := data.(type) {
+	case map[string]string:
+		if repoPath := strings.TrimSpace(payload["repoPath"]); repoPath != "" {
+			return filepath.Clean(repoPath)
+		}
+		if pathValue := strings.TrimSpace(payload["path"]); pathValue != "" {
+			return extractRepoPathFromGitEventPath(pathValue)
+		}
+	case map[string]interface{}:
+		if rawRepoPath, ok := payload["repoPath"].(string); ok && strings.TrimSpace(rawRepoPath) != "" {
+			return filepath.Clean(strings.TrimSpace(rawRepoPath))
+		}
+		if rawPath, ok := payload["path"].(string); ok && strings.TrimSpace(rawPath) != "" {
+			return extractRepoPathFromGitEventPath(rawPath)
+		}
+	}
+
+	return ""
 }
 
 func (a *App) appendGitActivityFromRuntimeEvent(eventName string, data interface{}) {
@@ -668,6 +878,16 @@ func (a *App) Shutdown(ctx context.Context) {
 		if err := a.fileWatcher.Close(); err != nil {
 			log.Printf("[ORCH] Error closing FileWatcher: %v", err)
 		}
+	}
+	a.stopGitPanelEventBridge()
+
+	// Encerrar workers da fila de comandos Git Panel
+	if a.gitPanel != nil {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if err := a.gitPanel.Close(shutdownCtx); err != nil {
+			log.Printf("[ORCH] Error closing GitPanel service: %v", err)
+		}
+		cancel()
 	}
 
 	// Destruir todos os terminais
@@ -1637,7 +1857,37 @@ func (a *App) GetWorkspacesWithAgents() ([]database.Workspace, error) {
 	if a.db == nil {
 		return []database.Workspace{}, nil
 	}
-	return a.db.GetWorkspacesWithAgents()
+
+	workspaces, err := a.db.GetWorkspacesWithAgents()
+	if err != nil {
+		return nil, err
+	}
+
+	sanitized, legacyAgentIDs := filterLegacyGitHubAgents(workspaces)
+	if len(legacyAgentIDs) == 0 {
+		return sanitized, nil
+	}
+
+	log.Printf("[ORCH][MIGRATION] found %d legacy github agents; migrating to dedicated Git Panel flow", len(legacyAgentIDs))
+
+	for _, legacyAgentID := range legacyAgentIDs {
+		if deleteErr := a.DeleteAgentSession(legacyAgentID); deleteErr != nil {
+			log.Printf("[ORCH][MIGRATION] failed to delete legacy github agent id=%d: %v", legacyAgentID, deleteErr)
+		}
+	}
+
+	refreshed, refreshErr := a.db.GetWorkspacesWithAgents()
+	if refreshErr != nil {
+		log.Printf("[ORCH][MIGRATION] unable to refresh workspaces after legacy cleanup: %v", refreshErr)
+		return sanitized, nil
+	}
+
+	refreshedSanitized, pendingLegacy := filterLegacyGitHubAgents(refreshed)
+	if len(pendingLegacy) > 0 {
+		log.Printf("[ORCH][MIGRATION] %d legacy github agents still present after cleanup", len(pendingLegacy))
+	}
+
+	return refreshedSanitized, nil
 }
 
 // DeleteWorkspace remove um workspace após matar todos os processos vinculados.
@@ -1716,9 +1966,9 @@ func (a *App) CreateAgentSession(workspaceID uint, name string, agentType string
 		trimmedName = fmt.Sprintf("Terminal %d", time.Now().Unix()%10000)
 	}
 
-	trimmedType := strings.TrimSpace(agentType)
-	if trimmedType == "" {
-		trimmedType = "terminal"
+	normalizedType, err := normalizeAgentSessionType(agentType)
+	if err != nil {
+		return nil, err
 	}
 
 	existing, err := a.db.ListAgents(workspaceID)
@@ -1729,7 +1979,7 @@ func (a *App) CreateAgentSession(workspaceID uint, name string, agentType string
 	agent := &database.AgentSession{
 		WorkspaceID: workspaceID,
 		Name:        trimmedName,
-		Type:        trimmedType,
+		Type:        normalizedType,
 		Shell:       a.resolvePreferredLocalShell(),
 		Status:      "idle",
 		SortOrder:   len(existing),
@@ -1752,6 +2002,45 @@ func (a *App) CreateAgentSession(workspaceID uint, name string, agentType string
 	}
 
 	return persisted, nil
+}
+
+func normalizeAgentSessionType(agentType string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(agentType))
+	switch normalized {
+	case "", "terminal":
+		return "terminal", nil
+	case "ai_agent":
+		return "ai_agent", nil
+	case "github":
+		return "", fmt.Errorf("agent type 'github' foi descontinuado; abra o Git Panel dedicado")
+	default:
+		return "", fmt.Errorf("unsupported agent type: %s", agentType)
+	}
+}
+
+func isLegacyGitHubAgentType(agentType string) bool {
+	return strings.EqualFold(strings.TrimSpace(agentType), "github")
+}
+
+func filterLegacyGitHubAgents(workspaces []database.Workspace) ([]database.Workspace, []uint) {
+	sanitized := make([]database.Workspace, 0, len(workspaces))
+	legacyAgentIDs := make([]uint, 0)
+
+	for _, ws := range workspaces {
+		keptAgents := make([]database.AgentSession, 0, len(ws.Agents))
+		for _, agent := range ws.Agents {
+			if isLegacyGitHubAgentType(agent.Type) {
+				legacyAgentIDs = append(legacyAgentIDs, agent.ID)
+				continue
+			}
+			keptAgents = append(keptAgents, agent)
+		}
+
+		ws.Agents = keptAgents
+		sanitized = append(sanitized, ws)
+	}
+
+	return sanitized, legacyAgentIDs
 }
 
 // DeleteAgentSession remove o agente e encerra seu processo associado.
@@ -2430,6 +2719,168 @@ func (a *App) GitActivityUnstageFile(repoPath string, filePath string) error {
 // GitActivityDiscardFile descarta mudanças locais de um arquivo.
 func (a *App) GitActivityDiscardFile(repoPath string, filePath string) error {
 	return ga.DiscardFile(repoPath, filePath)
+}
+
+// === GitPanel Bindings (expostos ao Frontend) ===
+
+func (a *App) requireGitPanelService() (*gp.Service, error) {
+	if a.gitPanel == nil {
+		return nil, gp.NewBindingError(
+			gp.CodeServiceUnavailable,
+			"Git Panel service indisponível.",
+			"O backend do Git Panel ainda não foi inicializado.",
+		)
+	}
+	return a.gitPanel, nil
+}
+
+func (a *App) normalizeGitPanelBindingError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return gp.NormalizeBindingError(err)
+}
+
+// GitPanelPreflight valida runtime e contexto de repositório antes das operações.
+func (a *App) GitPanelPreflight(repoPath string) (gp.PreflightResult, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.PreflightResult{}, err
+	}
+
+	result, preflightErr := svc.Preflight(repoPath)
+	if preflightErr != nil {
+		return gp.PreflightResult{}, a.normalizeGitPanelBindingError(preflightErr)
+	}
+	return result, nil
+}
+
+// GitPanelGetStatus retorna snapshot de status staged/unstaged/conflicted.
+func (a *App) GitPanelGetStatus(repoPath string) (gp.StatusDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.StatusDTO{}, err
+	}
+
+	result, statusErr := svc.GetStatus(repoPath)
+	if statusErr != nil {
+		return gp.StatusDTO{}, a.normalizeGitPanelBindingError(statusErr)
+	}
+	return result, nil
+}
+
+// GitPanelGetHistory retorna página de histórico linear.
+func (a *App) GitPanelGetHistory(repoPath string, cursor string, limit int, query string) (gp.HistoryPageDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.HistoryPageDTO{}, err
+	}
+
+	result, historyErr := svc.GetHistory(repoPath, cursor, limit, query)
+	if historyErr != nil {
+		return gp.HistoryPageDTO{}, a.normalizeGitPanelBindingError(historyErr)
+	}
+	return result, nil
+}
+
+// GitPanelGetDiff retorna diff textual base para o frontend.
+func (a *App) GitPanelGetDiff(repoPath string, filePath string, mode string, contextLines int) (gp.DiffDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.DiffDTO{}, err
+	}
+
+	result, diffErr := svc.GetDiff(repoPath, filePath, mode, contextLines)
+	if diffErr != nil {
+		return gp.DiffDTO{}, a.normalizeGitPanelBindingError(diffErr)
+	}
+	return result, nil
+}
+
+// GitPanelGetConflicts retorna arquivos em estado de conflito.
+func (a *App) GitPanelGetConflicts(repoPath string) ([]gp.ConflictFileDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return nil, err
+	}
+
+	result, conflictsErr := svc.GetConflicts(repoPath)
+	if conflictsErr != nil {
+		return nil, a.normalizeGitPanelBindingError(conflictsErr)
+	}
+	return result, nil
+}
+
+// GitPanelStageFile adiciona arquivo ao stage.
+func (a *App) GitPanelStageFile(repoPath string, filePath string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.StageFile(repoPath, filePath))
+}
+
+// GitPanelUnstageFile remove arquivo do stage.
+func (a *App) GitPanelUnstageFile(repoPath string, filePath string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.UnstageFile(repoPath, filePath))
+}
+
+// GitPanelDiscardFile descarta alterações locais de um arquivo.
+func (a *App) GitPanelDiscardFile(repoPath string, filePath string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.DiscardFile(repoPath, filePath))
+}
+
+// GitPanelStagePatch aplica patch parcial no stage.
+func (a *App) GitPanelStagePatch(repoPath string, patchText string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.StagePatch(repoPath, patchText))
+}
+
+// GitPanelUnstagePatch remove patch parcial do stage.
+func (a *App) GitPanelUnstagePatch(repoPath string, patchText string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.UnstagePatch(repoPath, patchText))
+}
+
+// GitPanelAcceptOurs aplica resolução de conflito com versão local.
+func (a *App) GitPanelAcceptOurs(repoPath string, filePath string, autoStage bool) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.AcceptOurs(repoPath, filePath, autoStage))
+}
+
+// GitPanelAcceptTheirs aplica resolução de conflito com versão remota.
+func (a *App) GitPanelAcceptTheirs(repoPath string, filePath string, autoStage bool) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.AcceptTheirs(repoPath, filePath, autoStage))
+}
+
+// GitPanelOpenExternalMergeTool abre a ferramenta de merge configurada no Git.
+func (a *App) GitPanelOpenExternalMergeTool(repoPath string, filePath string) error {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return err
+	}
+	return a.normalizeGitPanelBindingError(svc.OpenExternalMergeTool(repoPath, filePath))
 }
 
 // === Polling Bindings (expostos ao Frontend) ===

@@ -76,8 +76,7 @@ export const readTerminalWorkspaceDragPayload = (
         const isPaneTypeValid =
           paneType !== undefined &&
           paneType !== 'terminal' &&
-          paneType !== 'ai_agent' &&
-          paneType !== 'github'
+          paneType !== 'ai_agent'
 
         if (paneId && Number.isInteger(agentId) && agentId > 0 && !isPaneTypeValid) {
           return {

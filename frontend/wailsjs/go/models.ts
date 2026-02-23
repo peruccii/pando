@@ -981,6 +981,302 @@ export namespace github {
 
 }
 
+export namespace gitpanel {
+	
+	export class ConflictFileDTO {
+	    path: string;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConflictFileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.status = source["status"];
+	    }
+	}
+	export class DiffLineDTO {
+	    type: string;
+	    content: string;
+	    oldLine?: number;
+	    newLine?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffLineDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.content = source["content"];
+	        this.oldLine = source["oldLine"];
+	        this.newLine = source["newLine"];
+	    }
+	}
+	export class DiffHunkDTO {
+	    header: string;
+	    oldStart: number;
+	    oldLines: number;
+	    newStart: number;
+	    newLines: number;
+	    lines: DiffLineDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffHunkDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.header = source["header"];
+	        this.oldStart = source["oldStart"];
+	        this.oldLines = source["oldLines"];
+	        this.newStart = source["newStart"];
+	        this.newLines = source["newLines"];
+	        this.lines = this.convertValues(source["lines"], DiffLineDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DiffFileDTO {
+	    path: string;
+	    oldPath?: string;
+	    status: string;
+	    additions: number;
+	    deletions: number;
+	    isBinary: boolean;
+	    hunks: DiffHunkDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffFileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.oldPath = source["oldPath"];
+	        this.status = source["status"];
+	        this.additions = source["additions"];
+	        this.deletions = source["deletions"];
+	        this.isBinary = source["isBinary"];
+	        this.hunks = this.convertValues(source["hunks"], DiffHunkDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DiffDTO {
+	    mode: string;
+	    filePath?: string;
+	    raw: string;
+	    files: DiffFileDTO[];
+	    isBinary: boolean;
+	    isTruncated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.filePath = source["filePath"];
+	        this.raw = source["raw"];
+	        this.files = this.convertValues(source["files"], DiffFileDTO);
+	        this.isBinary = source["isBinary"];
+	        this.isTruncated = source["isTruncated"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	export class FileChangeDTO {
+	    path: string;
+	    originalPath?: string;
+	    status: string;
+	    added: number;
+	    removed: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileChangeDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.originalPath = source["originalPath"];
+	        this.status = source["status"];
+	        this.added = source["added"];
+	        this.removed = source["removed"];
+	    }
+	}
+	export class HistoryItemDTO {
+	    hash: string;
+	    shortHash: string;
+	    author: string;
+	    authoredAt: string;
+	    subject: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistoryItemDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hash = source["hash"];
+	        this.shortHash = source["shortHash"];
+	        this.author = source["author"];
+	        this.authoredAt = source["authoredAt"];
+	        this.subject = source["subject"];
+	    }
+	}
+	export class HistoryPageDTO {
+	    items: HistoryItemDTO[];
+	    nextCursor: string;
+	    hasMore: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistoryPageDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], HistoryItemDTO);
+	        this.nextCursor = source["nextCursor"];
+	        this.hasMore = source["hasMore"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PreflightResult {
+	    gitAvailable: boolean;
+	    repoPath: string;
+	    repoRoot: string;
+	    branch?: string;
+	    mergeActive: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreflightResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gitAvailable = source["gitAvailable"];
+	        this.repoPath = source["repoPath"];
+	        this.repoRoot = source["repoRoot"];
+	        this.branch = source["branch"];
+	        this.mergeActive = source["mergeActive"];
+	    }
+	}
+	export class StatusDTO {
+	    branch: string;
+	    ahead: number;
+	    behind: number;
+	    staged: FileChangeDTO[];
+	    unstaged: FileChangeDTO[];
+	    conflicted: ConflictFileDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new StatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.branch = source["branch"];
+	        this.ahead = source["ahead"];
+	        this.behind = source["behind"];
+	        this.staged = this.convertValues(source["staged"], FileChangeDTO);
+	        this.unstaged = this.convertValues(source["unstaged"], FileChangeDTO);
+	        this.conflicted = this.convertValues(source["conflicted"], ConflictFileDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace main {
 	
 	export class HydrationPayload {

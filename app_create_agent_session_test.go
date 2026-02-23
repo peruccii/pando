@@ -69,3 +69,82 @@ func TestCreateAgentSessionDatabaseNotInitialized(t *testing.T) {
 	}
 }
 
+func TestCreateAgentSessionRejectsLegacyGitHubType(t *testing.T) {
+	app := newTestAppWithDatabase(t)
+
+	agent, err := app.CreateAgentSession(0, "Legacy GitHub", "github")
+	if err == nil {
+		t.Fatalf("expected error for deprecated github agent type, got payload=%+v", agent)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "descontinuado") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestGetWorkspacesWithAgentsMigratesLegacyGitHubAgents(t *testing.T) {
+	app := newTestAppWithDatabase(t)
+
+	workspace, err := app.db.GetActiveWorkspace()
+	if err != nil {
+		t.Fatalf("failed to load active workspace: %v", err)
+	}
+	if workspace == nil || workspace.ID == 0 {
+		t.Fatalf("invalid active workspace payload")
+	}
+
+	terminalAgent := &database.AgentSession{
+		WorkspaceID: workspace.ID,
+		Name:        "Terminal 1",
+		Type:        "terminal",
+		Shell:       "/bin/zsh",
+		Status:      "idle",
+		SortOrder:   0,
+	}
+	if err := app.db.CreateAgent(terminalAgent); err != nil {
+		t.Fatalf("failed to create terminal agent: %v", err)
+	}
+
+	legacyGitHubAgent := &database.AgentSession{
+		WorkspaceID: workspace.ID,
+		Name:        "GitHub Legacy",
+		Type:        "github",
+		Shell:       "/bin/zsh",
+		Status:      "idle",
+		SortOrder:   1,
+	}
+	if err := app.db.CreateAgent(legacyGitHubAgent); err != nil {
+		t.Fatalf("failed to create github legacy agent: %v", err)
+	}
+
+	workspaces, err := app.GetWorkspacesWithAgents()
+	if err != nil {
+		t.Fatalf("GetWorkspacesWithAgents returned error: %v", err)
+	}
+
+	var selected *database.Workspace
+	for i := range workspaces {
+		if workspaces[i].ID == workspace.ID {
+			selected = &workspaces[i]
+			break
+		}
+	}
+	if selected == nil {
+		t.Fatalf("workspace %d not found in response", workspace.ID)
+	}
+
+	for _, agent := range selected.Agents {
+		if strings.EqualFold(strings.TrimSpace(agent.Type), "github") {
+			t.Fatalf("legacy github agent leaked in response payload")
+		}
+	}
+
+	persistedAgents, err := app.db.ListAgents(workspace.ID)
+	if err != nil {
+		t.Fatalf("failed to list persisted agents: %v", err)
+	}
+	for _, agent := range persistedAgents {
+		if strings.EqualFold(strings.TrimSpace(agent.Type), "github") {
+			t.Fatalf("legacy github agent was not migrated from database")
+		}
+	}
+}

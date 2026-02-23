@@ -1,8 +1,10 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
+	fw "orch/internal/filewatcher"
 	ga "orch/internal/gitactivity"
 )
 
@@ -48,5 +50,65 @@ func TestShouldRecordIndexActivity(t *testing.T) {
 	}
 	if app.shouldRecordIndexActivity(repo, changed) {
 		t.Fatalf("same changed snapshot repeated should not emit")
+	}
+}
+
+func TestMapLegacyGitEventToGitPanelInvalidation(t *testing.T) {
+	tests := []struct {
+		eventName     string
+		wantStatus    bool
+		wantHistory   bool
+		wantConflicts bool
+	}{
+		{eventName: "git:index", wantStatus: true},
+		{eventName: "git:merge", wantStatus: true, wantConflicts: true},
+		{eventName: "git:branch_changed", wantStatus: true, wantHistory: true},
+		{eventName: "git:commit", wantStatus: true, wantHistory: true},
+		{eventName: "git:fetch", wantStatus: true},
+		{eventName: "git:commit_preparing"},
+		{eventName: "unknown:event"},
+	}
+
+	for _, tt := range tests {
+		got := mapLegacyGitEventToGitPanelInvalidation(tt.eventName)
+		if got.Status != tt.wantStatus || got.History != tt.wantHistory || got.Conflicts != tt.wantConflicts {
+			t.Fatalf(
+				"event=%s unexpected mapping got={status:%v history:%v conflicts:%v} want={status:%v history:%v conflicts:%v}",
+				tt.eventName,
+				got.Status,
+				got.History,
+				got.Conflicts,
+				tt.wantStatus,
+				tt.wantHistory,
+				tt.wantConflicts,
+			)
+		}
+	}
+}
+
+func TestExtractRepoPathFromGitEventData(t *testing.T) {
+	repo := filepath.Clean("/tmp/repo")
+	event := fw.FileEvent{
+		Type: "index",
+		Path: filepath.Join(repo, ".git", "index"),
+	}
+
+	fromEvent := extractRepoPathFromGitEventData(event)
+	if fromEvent != repo {
+		t.Fatalf("unexpected repo from file event: got=%q want=%q", fromEvent, repo)
+	}
+
+	fromMap := extractRepoPathFromGitEventData(map[string]string{
+		"repoPath": repo,
+	})
+	if fromMap != repo {
+		t.Fatalf("unexpected repo from map payload: got=%q want=%q", fromMap, repo)
+	}
+
+	fromPathMap := extractRepoPathFromGitEventData(map[string]interface{}{
+		"path": filepath.Join(repo, ".git", "HEAD"),
+	})
+	if fromPathMap != repo {
+		t.Fatalf("unexpected repo from path payload: got=%q want=%q", fromPathMap, repo)
 	}
 }

@@ -119,7 +119,7 @@ Requisitos:
 - acoes rapidas:
   - Accept Mine (`git checkout --ours -- <file>` + opcao de stage)
   - Accept Theirs (`git checkout --theirs -- <file>` + opcao de stage)
-  - Open External Tool (configuravel)
+  - Open External Tool (v1.1; fora do corte do v1)
 
 Criterios de aceite:
 
@@ -226,7 +226,7 @@ Layout alvo (sem grafos):
 
 Atalhos alvo:
 
-- `Cmd+Enter` commit
+- `Cmd+Enter` commit (v1.1; fora do corte do v1)
 - `Cmd+S` stage selecao atual
 - `Cmd+Shift+S` unstage selecao atual
 - `Cmd+D` toggle diff
@@ -331,18 +331,20 @@ E2E:
 - file watcher ja operacional (existente no ORCH)
 - bindings Wails adicionais para Git Panel
 
-## 15. Open Questions
+## 15. Open Questions (Resolvidas em 2026-02-22)
 
-- O nome visual do botao/tela permanece "GitHub" ou muda para "Git" no v1?
-- Commit action entra no v1 ou fica para v1.1?
-- External merge tool sera configuravel na primeira entrega ou fixo por ambiente?
+Decisoes oficiais:
 
-## 16. Decisao de Escopo Recomendada
+1. Nome visual no v1: manter `GitHub` como botao de entrada para preservar compatibilidade de UX, com funcionalidade oficial sendo `Git Panel` (Git local).
+2. Commit action no v1: nao entra no v1. Fica oficialmente para v1.1.
+3. External merge tool no v1: nao entra no v1. v1 entrega somente `Accept Mine/Theirs` com opcao de auto-stage.
 
-Para reduzir risco e entregar valor rapido:
+## 16. Decisao de Escopo Oficial (v1 vs v1.1)
 
-- v1: historico linear + layout inspirado no Git Extensions (sem grafos) + diff + stage/unstage + conflitos basicos
-- v1.1: line-level staging completo + console avancado + refinamentos de UX
+Para reduzir risco e garantir rollout confiavel:
+
+- v1: tela dedicada do Git Panel (fora do mosaico), abertura pelo botao `GitHub`, historico linear, status staged/unstaged/conflicted, diff por arquivo e operacoes write basicas (`stage`, `unstage`, `discard`) com queue sequencial e guardrails de seguranca.
+- v1.1: commit action na UI, stage parcial por hunk/linha, external merge tool configuravel, console avancado e refinamentos de UX.
 
 ## Codigos pra ajudar no desenvolvimento
 

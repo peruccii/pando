@@ -250,6 +250,58 @@ export function GitActivityUnstageFile(arg1, arg2) {
   return window['go']['main']['App']['GitActivityUnstageFile'](arg1, arg2);
 }
 
+export function GitPanelAcceptOurs(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelAcceptOurs'](arg1, arg2, arg3);
+}
+
+export function GitPanelAcceptTheirs(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelAcceptTheirs'](arg1, arg2, arg3);
+}
+
+export function GitPanelDiscardFile(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelDiscardFile'](arg1, arg2);
+}
+
+export function GitPanelGetConflicts(arg1) {
+  return window['go']['main']['App']['GitPanelGetConflicts'](arg1);
+}
+
+export function GitPanelGetDiff(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelGetDiff'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelGetHistory(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelGetHistory'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelGetStatus(arg1) {
+  return window['go']['main']['App']['GitPanelGetStatus'](arg1);
+}
+
+export function GitPanelOpenExternalMergeTool(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelOpenExternalMergeTool'](arg1, arg2);
+}
+
+export function GitPanelPreflight(arg1) {
+  return window['go']['main']['App']['GitPanelPreflight'](arg1);
+}
+
+export function GitPanelStageFile(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelStageFile'](arg1, arg2);
+}
+
+export function GitPanelStagePatch(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelStagePatch'](arg1, arg2);
+}
+
+export function GitPanelUnstageFile(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelUnstageFile'](arg1, arg2);
+}
+
+export function GitPanelUnstagePatch(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelUnstagePatch'](arg1, arg2);
+}
+
 export function HandleDeepLink(arg1) {
   return window['go']['main']['App']['HandleDeepLink'](arg1);
 }

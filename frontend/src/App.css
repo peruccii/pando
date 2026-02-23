@@ -16,6 +16,23 @@
   position: relative;
 }
 
+.app__main-content {
+  width: 100%;
+  height: 100%;
+}
+
+.app__main-content--hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.app__git-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-modal) - 2);
+}
+
 .app--broadcast-active .app__main::after {
   content: '';
   position: absolute;

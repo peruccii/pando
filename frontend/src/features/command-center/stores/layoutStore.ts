@@ -289,7 +289,7 @@ export const useLayoutStore = create<LayoutState & LayoutActions>((set, get) => 
     const state = get()
     const counter = state.paneCounter + 1
     const id = `pane-${counter}`
-    const defaultTitle = title || (type === 'terminal' ? `Terminal ${counter}` : type === 'ai_agent' ? `AI Agent ${counter}` : `GitHub ${counter}`)
+    const defaultTitle = title || (type === 'terminal' ? `Terminal ${counter}` : `AI Agent ${counter}`)
 
     const newPane: PaneInfo = {
       id,
@@ -611,25 +611,50 @@ export const useLayoutStore = create<LayoutState & LayoutActions>((set, get) => 
         // Validar: filtrar paneOrder apenas para painéis que realmente existem
         const validPaneOrder = data.paneOrder.filter((id: string) => !!data.panes[id])
 
-        // Validar: garantir que todos os painéis em panes estão no paneOrder
+        // Validar + migrar: remover pane legado `github` e tipos desconhecidos.
         const validPanes: Record<string, PaneInfo> = {}
+        const migratedPaneOrder: string[] = []
+        let hasLegacyGitHubPane = false
+
         for (const id of validPaneOrder) {
-          const pane = { ...data.panes[id] }
+          const pane = { ...data.panes[id] } as PaneInfo & { type?: string }
+          const rawType = typeof pane.type === 'string' ? pane.type.trim().toLowerCase() : ''
+
+          if (rawType === 'github') {
+            hasLegacyGitHubPane = true
+            continue
+          }
+          if (rawType !== 'terminal' && rawType !== 'ai_agent') {
+            continue
+          }
+
+          pane.type = rawType as PaneInfo['type']
           // Limpar sessionID — terminais anteriores não estão vivos após restart
           delete pane.sessionID
           // Resetar status para idle
           pane.status = 'idle'
           validPanes[id] = pane
+          migratedPaneOrder.push(id)
         }
 
-        if (validPaneOrder.length === 0) {
+        if (migratedPaneOrder.length === 0) {
           // Nenhum painel válido — resetar para estado limpo
           console.warn('[Layout] No valid panes in saved layout, resetting')
+          set({
+            panes: {},
+            paneOrder: [],
+            mosaicNode: null,
+            activePaneId: null,
+            paneCounter: 0,
+          })
+          if (hasLegacyGitHubPane) {
+            window.dispatchEvent(new CustomEvent('git-panel:open'))
+          }
           return
         }
 
         // Validar mosaicNode — verificar se referencia apenas painéis válidos
-        const validPaneSet = new Set(validPaneOrder)
+        const validPaneSet = new Set(migratedPaneOrder)
         const isMosaicNodeValid = (node: MosaicNode<string> | null | undefined): boolean => {
           if (node == null) return false
           if (typeof node === 'string') return validPaneSet.has(node)
@@ -641,19 +666,23 @@ export const useLayoutStore = create<LayoutState & LayoutActions>((set, get) => 
 
         const mosaicNode = isMosaicNodeValid(data.mosaicNode)
           ? data.mosaicNode
-          : calculateLayout(validPaneOrder)
+          : calculateLayout(migratedPaneOrder)
 
         const activePaneId = data.activePaneId && validPaneSet.has(data.activePaneId)
           ? data.activePaneId
-          : (validPaneOrder.length > 0 ? validPaneOrder[0] : null)
+          : (migratedPaneOrder.length > 0 ? migratedPaneOrder[0] : null)
 
         set({
           panes: validPanes,
-          paneOrder: validPaneOrder,
+          paneOrder: migratedPaneOrder,
           mosaicNode,
           activePaneId,
-          paneCounter: data.paneCounter || validPaneOrder.length,
+          paneCounter: data.paneCounter || migratedPaneOrder.length,
         })
+
+        if (hasLegacyGitHubPane) {
+          window.dispatchEvent(new CustomEvent('git-panel:open'))
+        }
       }
     } catch (err) {
       console.warn('[Layout] Failed to parse layout:', err)

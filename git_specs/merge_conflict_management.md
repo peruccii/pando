@@ -25,6 +25,8 @@ Detectar e resolver conflitos de merge com fluxo minimo, rapido e seguro.
   - `git checkout --theirs -- <file>`
 - opcional auto-stage:
   - `git add -- <file>`
+- open external tool:
+  - `git mergetool --no-prompt -- <file>`
 
 ## 5. Regras de Negocio
 
@@ -43,4 +45,3 @@ Detectar e resolver conflitos de merge com fluxo minimo, rapido e seguro.
 - conflito aparece no painel em <= 300ms apos evento do watcher
 - `Mine/Theirs` atualiza status sem reiniciar app
 - erros sao claros e com instrucoes de proximo passo
-

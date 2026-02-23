@@ -8,6 +8,7 @@ import {main} from '../models';
 import {filewatcher} from '../models';
 import {terminal} from '../models';
 import {gitactivity} from '../models';
+import {gitpanel} from '../models';
 import {session} from '../models';
 
 export function AICancel(arg1:string):Promise<void>;
@@ -133,6 +134,32 @@ export function GitActivityGetStagedFiles(arg1:string):Promise<Array<gitactivity
 export function GitActivityList(arg1:number,arg2:string,arg3:string):Promise<Array<gitactivity.Event>>;
 
 export function GitActivityUnstageFile(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelAcceptOurs(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
+export function GitPanelAcceptTheirs(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
+export function GitPanelDiscardFile(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelGetConflicts(arg1:string):Promise<Array<gitpanel.ConflictFileDTO>>;
+
+export function GitPanelGetDiff(arg1:string,arg2:string,arg3:string,arg4:number):Promise<gitpanel.DiffDTO>;
+
+export function GitPanelGetHistory(arg1:string,arg2:string,arg3:number,arg4:string):Promise<gitpanel.HistoryPageDTO>;
+
+export function GitPanelGetStatus(arg1:string):Promise<gitpanel.StatusDTO>;
+
+export function GitPanelOpenExternalMergeTool(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelPreflight(arg1:string):Promise<gitpanel.PreflightResult>;
+
+export function GitPanelStageFile(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelStagePatch(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelUnstageFile(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelUnstagePatch(arg1:string,arg2:string):Promise<void>;
 
 export function HandleDeepLink(arg1:string):Promise<void>;
 
