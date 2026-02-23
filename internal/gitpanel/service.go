@@ -1024,68 +1024,69 @@ func parseHistoryItems(raw string) []HistoryItemDTO {
 		return nil
 	}
 
+	// O git log com --numstat emite \x1e ao fim do header e só depois imprime os numstats.
+	// Inserimos quebra após \x1e para ter parsing estável por linha (inclui fixtures sem \n).
+	normalizedRaw := strings.ReplaceAll(raw, "\x1e", "\x1e\n")
+	lines := strings.Split(normalizedRaw, "\n")
+
 	items := make([]HistoryItemDTO, 0, 64)
-	records := strings.Split(raw, "\x1e")
-	for _, record := range records {
-		trimmedRecord := strings.Trim(record, "\r\n")
-		if trimmedRecord == "" {
+	currentIndex := -1
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
-		newlineIndex := strings.IndexByte(trimmedRecord, '\n')
-		header := trimmedRecord
-		numstatRaw := ""
-		if newlineIndex >= 0 {
-			header = strings.TrimSpace(trimmedRecord[:newlineIndex])
-			numstatRaw = strings.TrimSpace(trimmedRecord[newlineIndex+1:])
-		}
-		if header == "" {
+		if headerItem, ok := parseHistoryHeaderLine(line); ok {
+			items = append(items, headerItem)
+			currentIndex = len(items) - 1
 			continue
 		}
 
-		fields := strings.SplitN(header, "\x1f", 6)
-		if len(fields) < 6 {
+		if currentIndex < 0 {
 			continue
 		}
 
-		hash := strings.TrimSpace(fields[0])
-		shortHash := strings.TrimSpace(fields[1])
-		author := strings.TrimSpace(fields[2])
-		authoredAt := strings.TrimSpace(fields[3])
-		authorEmail := strings.TrimSpace(fields[4])
-		subject := strings.TrimRight(fields[5], "\r\n")
-		if hash == "" || shortHash == "" {
+		parsed, parsedAdditions, parsedDeletions := parseHistoryNumstatLine(line)
+		if !parsed {
 			continue
 		}
-
-		additions := 0
-		deletions := 0
-		changedFiles := 0
-		if numstatRaw != "" {
-			for _, line := range strings.Split(numstatRaw, "\n") {
-				parsed, parsedAdditions, parsedDeletions := parseHistoryNumstatLine(line)
-				if !parsed {
-					continue
-				}
-				changedFiles++
-				additions += parsedAdditions
-				deletions += parsedDeletions
-			}
-		}
-
-		items = append(items, HistoryItemDTO{
-			Hash:         hash,
-			ShortHash:    shortHash,
-			Author:       author,
-			AuthoredAt:   authoredAt,
-			Subject:      subject,
-			Additions:    additions,
-			Deletions:    deletions,
-			ChangedFiles: changedFiles,
-			AuthorEmail:  authorEmail,
-		})
+		items[currentIndex].ChangedFiles++
+		items[currentIndex].Additions += parsedAdditions
+		items[currentIndex].Deletions += parsedDeletions
 	}
 	return items
+}
+
+func parseHistoryHeaderLine(rawLine string) (HistoryItemDTO, bool) {
+	header := strings.TrimSpace(strings.TrimRight(rawLine, "\r"))
+	if header == "" {
+		return HistoryItemDTO{}, false
+	}
+
+	header = strings.TrimRight(header, "\x1e")
+	fields := strings.SplitN(header, "\x1f", 6)
+	if len(fields) < 6 {
+		return HistoryItemDTO{}, false
+	}
+
+	hash := strings.TrimSpace(fields[0])
+	shortHash := strings.TrimSpace(fields[1])
+	if hash == "" || shortHash == "" {
+		return HistoryItemDTO{}, false
+	}
+
+	return HistoryItemDTO{
+		Hash:         hash,
+		ShortHash:    shortHash,
+		Author:       strings.TrimSpace(fields[2]),
+		AuthoredAt:   strings.TrimSpace(fields[3]),
+		Subject:      strings.TrimRight(fields[5], "\r\n\x1e"),
+		AuthorEmail:  strings.TrimSpace(fields[4]),
+		Additions:    0,
+		Deletions:    0,
+		ChangedFiles: 0,
+	}, true
 }
 
 func parseHistoryNumstatLine(rawLine string) (bool, int, int) {

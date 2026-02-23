@@ -670,7 +670,11 @@ func TestOpenExternalMergeToolUsesGitMergetool(t *testing.T) {
 }
 
 func TestParseHistoryItemsPreservesSpecialCharacters(t *testing.T) {
-	raw := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1faaaaaaaa\x1fAlice\x1f2026-02-22T15:04:05Z\x1falice@example.com\x1ffeat: suporte pipe | tab\t e separador \x1f interno\n12\t3\tsrc/main.ts\n-\t-\tassets/logo.png\x1e"
+	raw := strings.Join([]string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1faaaaaaaa\x1fAlice\x1f2026-02-22T15:04:05Z\x1falice@example.com\x1ffeat: suporte pipe | tab\t e separador \x1f interno\x1e",
+		"12\t3\tsrc/main.ts",
+		"-\t-\tassets/logo.png",
+	}, "\n")
 
 	items := parseHistoryItems(raw)
 	if len(items) != 1 {
@@ -693,6 +697,44 @@ func TestParseHistoryItemsPreservesSpecialCharacters(t *testing.T) {
 	}
 	if got, want := items[0].ChangedFiles, 2; got != want {
 		t.Fatalf("unexpected changed files: got=%d want=%d", got, want)
+	}
+}
+
+func TestParseHistoryItemsParsesMultipleCommitsInGitLogNumstatLayout(t *testing.T) {
+	raw := strings.Join([]string{
+		"1111111111111111111111111111111111111111\x1f11111111\x1fAlice\x1f2026-02-22T15:04:05Z\x1falice@example.com\x1ffeat: first\x1e",
+		"10\t2\tsrc/main.ts",
+		"-\t-\tassets/logo.png",
+		"",
+		"2222222222222222222222222222222222222222\x1f22222222\x1fBob\x1f2026-02-21T15:04:05Z\x1fbob@example.com\x1ffix: second\x1e",
+		"4\t1\tREADME.md",
+	}, "\n")
+
+	items := parseHistoryItems(raw)
+	if got, want := len(items), 2; got != want {
+		t.Fatalf("unexpected history item count: got=%d want=%d", got, want)
+	}
+
+	first := items[0]
+	if got, want := first.ChangedFiles, 2; got != want {
+		t.Fatalf("unexpected first changed files: got=%d want=%d", got, want)
+	}
+	if got, want := first.Additions, 10; got != want {
+		t.Fatalf("unexpected first additions: got=%d want=%d", got, want)
+	}
+	if got, want := first.Deletions, 2; got != want {
+		t.Fatalf("unexpected first deletions: got=%d want=%d", got, want)
+	}
+
+	second := items[1]
+	if got, want := second.ChangedFiles, 1; got != want {
+		t.Fatalf("unexpected second changed files: got=%d want=%d", got, want)
+	}
+	if got, want := second.Additions, 4; got != want {
+		t.Fatalf("unexpected second additions: got=%d want=%d", got, want)
+	}
+	if got, want := second.Deletions, 1; got != want {
+		t.Fatalf("unexpected second deletions: got=%d want=%d", got, want)
 	}
 }
 

@@ -26,7 +26,7 @@
   grid-template-columns: auto minmax(520px, 1fr);
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border-primary);
   background: rgba(12, 18, 30, 0.82);
   backdrop-filter: blur(12px);
@@ -42,38 +42,75 @@
   padding: 0;
 }
 
-.git-panel-screen__repo-form {
+.git-panel-screen__repo-panel {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   width: 100%;
 }
 
-.git-panel-screen__repo-label {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.git-panel-screen__repo-input-wrap {
+.git-panel-screen__repo-bar {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
 }
 
-.git-panel-screen__repo-input {
+.git-panel-screen__repo-chip {
   min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: rgba(8, 13, 24, 0.5);
+  padding: 7px 12px;
 }
 
-.git-panel-screen__refresh-btn {
+.git-panel-screen__repo-chip--empty {
+  border-style: dashed;
+  border-color: rgba(135, 164, 216, 0.4);
+  background: rgba(36, 51, 76, 0.48);
+}
+
+.git-panel-screen__repo-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: var(--font-medium);
+  flex-shrink: 0;
+}
+
+.git-panel-screen__repo-chip-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.git-panel-screen__repo-picker-btn {
+  min-height: 34px;
+  padding: 0 12px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.git-panel-screen__repo-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .git-panel-screen__layout {
@@ -1402,7 +1439,7 @@
     grid-area: back;
   }
 
-  .git-panel-screen__repo-form {
+  .git-panel-screen__repo-panel {
     grid-area: repo;
   }
 
@@ -1434,6 +1471,23 @@
 
   .git-panel-screen__back {
     justify-self: start;
+  }
+
+  .git-panel-screen__repo-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .git-panel-screen__repo-chip {
+    padding: 8px 10px;
+  }
+
+  .git-panel-screen__repo-chip-label {
+    font-size: 9px;
+  }
+
+  .git-panel-screen__repo-picker-btn {
+    justify-content: center;
   }
 
   .git-panel-screen__layout {

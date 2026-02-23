@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -12,7 +12,6 @@ import {
   History,
   Loader2,
   Plus,
-  RefreshCw,
   Search,
   ShieldAlert,
   Terminal,
@@ -632,11 +631,6 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     totalVirtualHeight,
   ])
 
-  const handleRefresh = useCallback((event?: FormEvent<HTMLFormElement>) => {
-    event?.preventDefault()
-    setActiveRepoPath(repoPathInput.trim())
-  }, [repoPathInput])
-
   const handlePickRepositoryDirectory = useCallback(async () => {
     if (isRepoPickerOpen) {
       return
@@ -784,7 +778,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
       return
     }
     const defaultAction = actionsRegionRef.current?.querySelector<HTMLElement>(
-      '.git-panel-screen__back, .git-panel-screen__refresh-btn, button, [tabindex]:not([tabindex="-1"])',
+      '.git-panel-screen__back, .git-panel-screen__repo-picker-btn, button, [tabindex]:not([tabindex="-1"])',
     )
     defaultAction?.focus()
   }, [])
@@ -875,6 +869,8 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
   const stagedCount = status?.staged.length ?? 0
   const unstagedCount = status?.unstaged.length ?? 0
   const conflictedCount = status?.conflicted.length ?? 0
+  const selectedRepoPath = (resolvedRepoPath || repoPathInput || activeRepoPath).trim()
+  const hasSelectedRepo = selectedRepoPath !== ''
 
   // --- Clear line selection when diff changes ---
   useEffect(() => {
@@ -1640,36 +1636,38 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
           <ArrowLeft size={14} />
         </button>
 
-        <form className="git-panel-screen__repo-form" onSubmit={handleRefresh}>
-          <label className="git-panel-screen__repo-label" htmlFor="git-panel-repo-path">
-            Repositório
-          </label>
-          <div className="git-panel-screen__repo-input-wrap">
-            <input
-              id="git-panel-repo-path"
-              className="input input--mono git-panel-screen__repo-input"
-              value={repoPathInput}
-              readOnly
-              placeholder="/Users/.../repo"
-              autoComplete="off"
-              spellCheck={false}
-            />
+        <div className="git-panel-screen__repo-panel">
+          <div className="git-panel-screen__repo-bar" role="group" aria-label="Seleção de repositório">
+            <div
+              className={`git-panel-screen__repo-chip ${hasSelectedRepo ? '' : 'git-panel-screen__repo-chip--empty'}`}
+              title={hasSelectedRepo ? selectedRepoPath : 'Nenhum repositório selecionado'}
+            >
+              <span className="git-panel-screen__repo-chip-label">
+                <FolderOpen size={13} />
+                Repositório
+              </span>
+              <span className="git-panel-screen__repo-chip-path" aria-live="polite">
+                {hasSelectedRepo ? selectedRepoPath : 'Nenhum repositório selecionado'}
+              </span>
+            </div>
+
             <button
-              className="btn btn--ghost git-panel-screen__refresh-btn"
+              className={`btn ${hasSelectedRepo ? 'btn--ghost' : 'btn--primary'} git-panel-screen__repo-picker-btn`}
               type="button"
               onClick={() => { void handlePickRepositoryDirectory() }}
               disabled={isRepoPickerOpen}
-              aria-label="Selecionar pasta do repositório"
+              aria-label={hasSelectedRepo ? 'Trocar repositório' : 'Selecionar repositório'}
             >
               {isRepoPickerOpen ? <Loader2 size={13} className="git-panel-log__spinner" /> : <FolderOpen size={13} />}
-              Selecionar pasta
-            </button>
-            <button className="btn btn--ghost git-panel-screen__refresh-btn" type="submit">
-              <RefreshCw size={13} />
-              Atualizar
+              {isRepoPickerOpen ? 'Abrindo...' : hasSelectedRepo ? 'Trocar' : 'Selecionar'}
             </button>
           </div>
-        </form>
+          {!hasSelectedRepo && (
+            <p className="git-panel-screen__repo-hint">
+              Selecione um repositório Git para carregar histórico, diff e stage.
+            </p>
+          )}
+        </div>
       </header>
 
       <div className="git-panel-screen__layout">
