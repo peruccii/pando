@@ -78,6 +78,7 @@ export interface HydrationPayload {
     id: string
     email: string
     name: string
+    username?: string
     avatarUrl?: string
     provider: string
   }

@@ -127,6 +127,7 @@ export namespace auth {
 	    id: string;
 	    email: string;
 	    name: string;
+	    username?: string;
 	    avatarUrl?: string;
 	    provider: string;
 	
@@ -139,6 +140,7 @@ export namespace auth {
 	        this.id = source["id"];
 	        this.email = source["email"];
 	        this.name = source["name"];
+	        this.username = source["username"];
 	        this.avatarUrl = source["avatarUrl"];
 	        this.provider = source["provider"];
 	    }
@@ -1166,6 +1168,11 @@ export namespace gitpanel {
 	    author: string;
 	    authoredAt: string;
 	    subject: string;
+	    additions: number;
+	    deletions: number;
+	    changedFiles: number;
+	    githubLogin?: string;
+	    githubAvatarUrl?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HistoryItemDTO(source);
@@ -1178,6 +1185,11 @@ export namespace gitpanel {
 	        this.author = source["author"];
 	        this.authoredAt = source["authoredAt"];
 	        this.subject = source["subject"];
+	        this.additions = source["additions"];
+	        this.deletions = source["deletions"];
+	        this.changedFiles = source["changedFiles"];
+	        this.githubLogin = source["githubLogin"];
+	        this.githubAvatarUrl = source["githubAvatarUrl"];
 	    }
 	}
 	export class HistoryPageDTO {

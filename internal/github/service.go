@@ -18,6 +18,8 @@ const (
 	defaultCacheTTL       = 30 * time.Second
 )
 
+const resolveCommitAuthorsBatchSize = 20
+
 // Service implementa IGitHubService
 type Service struct {
 	token     func() (string, error) // Função que retorna o token GitHub
@@ -1067,7 +1069,156 @@ func (s *Service) GetCachedPullRequest(owner, repo string, number int) (*PullReq
 	return s.cache.GetPR(owner, repo, number)
 }
 
+// ResolveCommitAuthors resolve login/avatar de autores de commits por SHA.
+// Retorna apenas commits encontrados e vinculados a usuários do GitHub.
+func (s *Service) ResolveCommitAuthors(owner, repo string, hashes []string) (map[string]User, error) {
+	normalizedOwner := strings.TrimSpace(owner)
+	normalizedRepo := strings.TrimSpace(repo)
+	if normalizedOwner == "" || normalizedRepo == "" {
+		return map[string]User{}, nil
+	}
+
+	uniqueHashes := normalizeCommitHashes(hashes)
+	if len(uniqueHashes) == 0 {
+		return map[string]User{}, nil
+	}
+
+	resolved := make(map[string]User, len(uniqueHashes))
+
+	for start := 0; start < len(uniqueHashes); start += resolveCommitAuthorsBatchSize {
+		end := start + resolveCommitAuthorsBatchSize
+		if end > len(uniqueHashes) {
+			end = len(uniqueHashes)
+		}
+		batch := uniqueHashes[start:end]
+		query, aliasToHash := buildResolveCommitAuthorsQuery(batch)
+		if len(aliasToHash) == 0 {
+			continue
+		}
+
+		data, err := s.executeQuery(query, map[string]interface{}{
+			"owner": normalizedOwner,
+			"repo":  normalizedRepo,
+		})
+		if err != nil {
+			return resolved, err
+		}
+
+		parsed, parseErr := parseResolveCommitAuthorsResponse(data, aliasToHash)
+		if parseErr != nil {
+			return resolved, parseErr
+		}
+
+		for hash, user := range parsed {
+			resolved[hash] = user
+		}
+	}
+
+	return resolved, nil
+}
+
 // === Internal Helpers ===
+
+var commitHashRegex = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
+
+func normalizeCommitHashes(hashes []string) []string {
+	if len(hashes) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(hashes))
+	seen := make(map[string]struct{}, len(hashes))
+
+	for _, raw := range hashes {
+		hash := strings.ToLower(strings.TrimSpace(raw))
+		if hash == "" || !commitHashRegex.MatchString(hash) {
+			continue
+		}
+		if _, exists := seen[hash]; exists {
+			continue
+		}
+		seen[hash] = struct{}{}
+		normalized = append(normalized, hash)
+	}
+
+	return normalized
+}
+
+func buildResolveCommitAuthorsQuery(hashes []string) (string, map[string]string) {
+	aliasToHash := make(map[string]string, len(hashes))
+	if len(hashes) == 0 {
+		return "", aliasToHash
+	}
+
+	var builder strings.Builder
+	builder.Grow(256 + len(hashes)*128)
+	builder.WriteString("query ResolveCommitAuthors($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) {")
+
+	for index, hash := range hashes {
+		alias := fmt.Sprintf("c%d", index)
+		aliasToHash[alias] = hash
+		builder.WriteString(alias)
+		builder.WriteString(`: object(oid: "`)
+		builder.WriteString(hash)
+		builder.WriteString(`") { ... on Commit { oid author { user { login avatarUrl } } } }`)
+	}
+
+	builder.WriteString("} }")
+	return builder.String(), aliasToHash
+}
+
+func parseResolveCommitAuthorsResponse(data json.RawMessage, aliasToHash map[string]string) (map[string]User, error) {
+	resolved := make(map[string]User, len(aliasToHash))
+	if len(aliasToHash) == 0 {
+		return resolved, nil
+	}
+
+	var payload struct {
+		Repository map[string]json.RawMessage `json:"repository"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse commit authors payload: %w", err)
+	}
+	if payload.Repository == nil {
+		return resolved, nil
+	}
+
+	for alias, hash := range aliasToHash {
+		rawNode, ok := payload.Repository[alias]
+		if !ok || len(rawNode) == 0 || bytes.Equal(rawNode, []byte("null")) {
+			continue
+		}
+
+		var node struct {
+			OID    string `json:"oid"`
+			Author struct {
+				User *struct {
+					Login     string `json:"login"`
+					AvatarURL string `json:"avatarUrl"`
+				} `json:"user"`
+			} `json:"author"`
+		}
+
+		if err := json.Unmarshal(rawNode, &node); err != nil {
+			continue
+		}
+		if node.Author.User == nil {
+			continue
+		}
+
+		login := strings.TrimSpace(node.Author.User.Login)
+		if login == "" {
+			continue
+		}
+
+		resolved[hash] = User{
+			Login:     login,
+			AvatarURL: strings.TrimSpace(node.Author.User.AvatarURL),
+		}
+	}
+
+	return resolved, nil
+}
 
 // prNode é o schema de parse para GraphQL PR
 type prNode struct {

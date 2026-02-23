@@ -89,12 +89,28 @@ interface GitPanelHistoryItem {
   author: string
   authoredAt: string
   subject: string
+  additions: number
+  deletions: number
+  changedFiles: number
+  githubLogin?: string
+  githubAvatarUrl?: string
 }
 
 interface GitPanelHistoryPageDTO {
   items: GitPanelHistoryItem[]
   nextCursor: string
   hasMore: boolean
+}
+
+interface GitPanelHistoryAuthorUpdate {
+  hash: string
+  githubLogin?: string
+  githubAvatarUrl?: string
+}
+
+interface GitPanelHistoryAuthorsEnrichedEvent {
+  repoPath?: string
+  items?: GitPanelHistoryAuthorUpdate[]
 }
 
 interface GitPanelDiffLine {
@@ -155,7 +171,7 @@ type VirtualHistoryRow =
   | { kind: 'loading'; index: number }
 
 const HISTORY_PAGE_SIZE = 200
-const HISTORY_ROW_HEIGHT = 62
+const HISTORY_ROW_HEIGHT = 92
 const HISTORY_OVERSCAN = 8
 const HISTORY_LOAD_MORE_THRESHOLD = HISTORY_ROW_HEIGHT * 10
 
@@ -243,6 +259,57 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     })
     return () => { off?.() }
   }, [])
+
+  useEffect(() => {
+    // @ts-ignore
+    const off = window.runtime?.EventsOn('gitpanel:history_authors_enriched', (payload: GitPanelHistoryAuthorsEnrichedEvent) => {
+      const payloadRepoPath = (payload?.repoPath || '').trim()
+      if (payloadRepoPath === '' || payloadRepoPath !== resolvedRepoPath.trim()) {
+        return
+      }
+      const incomingItems = payload?.items ?? []
+      if (incomingItems.length === 0) {
+        return
+      }
+
+      const updates = new Map<string, GitPanelHistoryAuthorUpdate>()
+      for (const item of incomingItems) {
+        const hash = (item?.hash || '').trim().toLowerCase()
+        if (hash === '') {
+          continue
+        }
+        updates.set(hash, item)
+      }
+      if (updates.size === 0) {
+        return
+      }
+
+      setHistoryItems((previous) => {
+        let changed = false
+        const next = previous.map((item) => {
+          const update = updates.get(item.hash.toLowerCase())
+          if (!update) {
+            return item
+          }
+
+          const nextLogin = (update.githubLogin || '').trim() || item.githubLogin
+          const nextAvatar = (update.githubAvatarUrl || '').trim() || item.githubAvatarUrl
+          if (nextLogin === item.githubLogin && nextAvatar === item.githubAvatarUrl) {
+            return item
+          }
+
+          changed = true
+          return {
+            ...item,
+            githubLogin: nextLogin,
+            githubAvatarUrl: nextAvatar,
+          }
+        })
+        return changed ? next : previous
+      })
+    })
+    return () => { off?.() }
+  }, [resolvedRepoPath])
 
 
   // Scroll sync refs for side-by-side mode
@@ -1718,10 +1785,27 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                         }}
                       >
                         <div className="git-panel-log__row-title">{row.item.subject || '(sem subject)'}</div>
+                        <div className="git-panel-log__row-author">
+                          {row.item.githubAvatarUrl ? (
+                            <img
+                              src={row.item.githubAvatarUrl}
+                              alt={`Avatar de ${resolveCommitActorLabel(row.item)}`}
+                              className="git-panel-log__avatar"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <span className="git-panel-log__avatar git-panel-log__avatar--fallback" aria-hidden="true">
+                              {buildCommitInitials(resolveCommitActorLabel(row.item))}
+                            </span>
+                          )}
+                          <span className="git-panel-log__author-name">{resolveCommitActorLabel(row.item)}</span>
+                        </div>
                         <div className="git-panel-log__row-meta">
                           <code>{row.item.shortHash}</code>
-                          <span>{row.item.author}</span>
                           <span>{formatCommitDate(row.item.authoredAt)}</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--positive">+{formatMetricCount(row.item.additions)}</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--negative">-{formatMetricCount(row.item.deletions)}</span>
+                          <span className="git-panel-log__metric">{formatFilesLabel(row.item.changedFiles)}</span>
                         </div>
                       </button>
                     )
@@ -1923,6 +2007,42 @@ function formatTimestamp(value: number | null): string {
     return 'nunca'
   }
   return new Date(value).toLocaleTimeString()
+}
+
+function resolveCommitActorLabel(item: GitPanelHistoryItem): string {
+  const login = (item.githubLogin || '').trim()
+  if (login !== '') {
+    return login
+  }
+  const author = (item.author || '').trim()
+  if (author !== '') {
+    return author
+  }
+  return 'autor desconhecido'
+}
+
+function buildCommitInitials(value: string): string {
+  const parts = value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  if (parts.length === 0) {
+    return '?'
+  }
+  if (parts.length === 1) {
+    return parts[0].slice(0, 1).toUpperCase()
+  }
+  return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase()
+}
+
+function formatMetricCount(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+  return safeValue.toLocaleString()
+}
+
+function formatFilesLabel(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+  return safeValue === 1 ? '1 file' : `${safeValue} files`
 }
 
 function mergeHistoryItems(current: GitPanelHistoryItem[], incoming: GitPanelHistoryItem[]): GitPanelHistoryItem[] {

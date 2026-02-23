@@ -670,7 +670,7 @@ func TestOpenExternalMergeToolUsesGitMergetool(t *testing.T) {
 }
 
 func TestParseHistoryItemsPreservesSpecialCharacters(t *testing.T) {
-	raw := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1faaaaaaaa\x1fAlice\x1f2026-02-22T15:04:05Z\x1ffeat: suporte pipe | tab\t e separador \x1f interno\x1e"
+	raw := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1faaaaaaaa\x1fAlice\x1f2026-02-22T15:04:05Z\x1falice@example.com\x1ffeat: suporte pipe | tab\t e separador \x1f interno\n12\t3\tsrc/main.ts\n-\t-\tassets/logo.png\x1e"
 
 	items := parseHistoryItems(raw)
 	if len(items) != 1 {
@@ -681,6 +681,18 @@ func TestParseHistoryItemsPreservesSpecialCharacters(t *testing.T) {
 	}
 	if got, want := items[0].Subject, "feat: suporte pipe | tab\t e separador \x1f interno"; got != want {
 		t.Fatalf("unexpected subject parsing: got=%q want=%q", got, want)
+	}
+	if got, want := items[0].AuthorEmail, "alice@example.com"; got != want {
+		t.Fatalf("unexpected author email: got=%q want=%q", got, want)
+	}
+	if got, want := items[0].Additions, 12; got != want {
+		t.Fatalf("unexpected additions: got=%d want=%d", got, want)
+	}
+	if got, want := items[0].Deletions, 3; got != want {
+		t.Fatalf("unexpected deletions: got=%d want=%d", got, want)
+	}
+	if got, want := items[0].ChangedFiles, 2; got != want {
+		t.Fatalf("unexpected changed files: got=%d want=%d", got, want)
 	}
 }
 
@@ -811,11 +823,11 @@ func TestGetHistoryUsesHashCursorAndSkipResolution(t *testing.T) {
 		if hasArgSequence(args, "log") {
 			switch {
 			case containsArg(args, "--skip=0"):
-				return historyRecord(hashC, "cccccccc", "Alice", "2026-02-22T11:00:00Z", "third") +
-					historyRecord(hashB, "bbbbbbbb", "Bob", "2026-02-21T11:00:00Z", "second") +
-					historyRecord(hashA, "aaaaaaaa", "Carol", "2026-02-20T11:00:00Z", "first"), "", 0, nil
+				return historyRecord(hashC, "cccccccc", "Alice", "2026-02-22T11:00:00Z", "alice@example.com", "third") +
+					historyRecord(hashB, "bbbbbbbb", "Bob", "2026-02-21T11:00:00Z", "bob@example.com", "second") +
+					historyRecord(hashA, "aaaaaaaa", "Carol", "2026-02-20T11:00:00Z", "carol@example.com", "first"), "", 0, nil
 			case containsArg(args, "--skip=2"):
-				return historyRecord(hashA, "aaaaaaaa", "Carol", "2026-02-20T11:00:00Z", "first"), "", 0, nil
+				return historyRecord(hashA, "aaaaaaaa", "Carol", "2026-02-20T11:00:00Z", "carol@example.com", "first"), "", 0, nil
 			default:
 				return "", "", 1, fmt.Errorf("unexpected log args: %v", args)
 			}
@@ -1038,14 +1050,21 @@ func containsArg(args []string, token string) bool {
 	return false
 }
 
-func historyRecord(hash string, shortHash string, author string, authoredAt string, subject string) string {
-	return strings.Join([]string{
+func historyRecord(hash string, shortHash string, author string, authoredAt string, authorEmail string, subject string, numstatLines ...string) string {
+	record := strings.Join([]string{
 		hash,
 		shortHash,
 		author,
 		authoredAt,
+		authorEmail,
 		subject,
-	}, "\x1f") + "\x1e"
+	}, "\x1f")
+
+	if len(numstatLines) > 0 {
+		record += "\n" + strings.Join(numstatLines, "\n")
+	}
+
+	return record + "\x1e"
 }
 
 func bytesRepeat(char byte, size int) []byte {

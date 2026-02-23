@@ -276,13 +276,14 @@ func (s *Service) GetHistory(repoPath string, cursor string, limit int, search s
 	}
 
 	pageSize := limit + 1
-	format := "%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1e"
+	format := "%H%x1f%h%x1f%an%x1f%aI%x1f%ae%x1f%s%x1e"
 	buildLogArgs := func(pageLimit int) []string {
 		args := []string{
 			"-C", preflight.RepoRoot,
 			"log",
 			"--date=iso-strict",
 			"--pretty=format:" + format,
+			"--numstat",
 		}
 
 		trimmedSearch := strings.TrimSpace(search)
@@ -1023,45 +1024,96 @@ func parseHistoryItems(raw string) []HistoryItemDTO {
 		return nil
 	}
 
-	rawBytes := []byte(raw)
 	items := make([]HistoryItemDTO, 0, 64)
-	for len(rawBytes) > 0 {
-		record := rawBytes
-		if idx := bytes.IndexByte(rawBytes, '\x1e'); idx >= 0 {
-			record = rawBytes[:idx]
-			rawBytes = rawBytes[idx+1:]
-		} else {
-			rawBytes = nil
-		}
-
-		record = bytes.Trim(record, "\r\n")
-		if len(record) == 0 {
+	records := strings.Split(raw, "\x1e")
+	for _, record := range records {
+		trimmedRecord := strings.Trim(record, "\r\n")
+		if trimmedRecord == "" {
 			continue
 		}
 
-		fields := bytes.SplitN(record, []byte{'\x1f'}, 5)
-		if len(fields) < 5 {
+		newlineIndex := strings.IndexByte(trimmedRecord, '\n')
+		header := trimmedRecord
+		numstatRaw := ""
+		if newlineIndex >= 0 {
+			header = strings.TrimSpace(trimmedRecord[:newlineIndex])
+			numstatRaw = strings.TrimSpace(trimmedRecord[newlineIndex+1:])
+		}
+		if header == "" {
 			continue
 		}
 
-		hash := strings.TrimSpace(string(fields[0]))
-		shortHash := strings.TrimSpace(string(fields[1]))
-		author := strings.TrimSpace(string(fields[2]))
-		authoredAt := strings.TrimSpace(string(fields[3]))
-		subject := string(bytes.TrimRight(fields[4], "\r\n"))
+		fields := strings.SplitN(header, "\x1f", 6)
+		if len(fields) < 6 {
+			continue
+		}
+
+		hash := strings.TrimSpace(fields[0])
+		shortHash := strings.TrimSpace(fields[1])
+		author := strings.TrimSpace(fields[2])
+		authoredAt := strings.TrimSpace(fields[3])
+		authorEmail := strings.TrimSpace(fields[4])
+		subject := strings.TrimRight(fields[5], "\r\n")
 		if hash == "" || shortHash == "" {
 			continue
 		}
 
+		additions := 0
+		deletions := 0
+		changedFiles := 0
+		if numstatRaw != "" {
+			for _, line := range strings.Split(numstatRaw, "\n") {
+				parsed, parsedAdditions, parsedDeletions := parseHistoryNumstatLine(line)
+				if !parsed {
+					continue
+				}
+				changedFiles++
+				additions += parsedAdditions
+				deletions += parsedDeletions
+			}
+		}
+
 		items = append(items, HistoryItemDTO{
-			Hash:       hash,
-			ShortHash:  shortHash,
-			Author:     author,
-			AuthoredAt: authoredAt,
-			Subject:    subject,
+			Hash:         hash,
+			ShortHash:    shortHash,
+			Author:       author,
+			AuthoredAt:   authoredAt,
+			Subject:      subject,
+			Additions:    additions,
+			Deletions:    deletions,
+			ChangedFiles: changedFiles,
+			AuthorEmail:  authorEmail,
 		})
 	}
 	return items
+}
+
+func parseHistoryNumstatLine(rawLine string) (bool, int, int) {
+	line := strings.TrimSpace(rawLine)
+	if line == "" {
+		return false, 0, 0
+	}
+
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) < 3 {
+		return false, 0, 0
+	}
+
+	additions := 0
+	if parts[0] != "-" {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil && parsed > 0 {
+			additions = parsed
+		}
+	}
+
+	deletions := 0
+	if parts[1] != "-" {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && parsed > 0 {
+			deletions = parsed
+		}
+	}
+
+	return true, additions, deletions
 }
 
 func parseDiffFiles(raw string) []DiffFileDTO {

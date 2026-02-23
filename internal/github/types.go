@@ -283,4 +283,5 @@ type IGitHubService interface {
 
 	// Cache & Polling
 	InvalidateCache(owner, repo string)
+	ResolveCommitAuthors(owner, repo string, hashes []string) (map[string]User, error)
 }

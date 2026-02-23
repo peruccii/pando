@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +44,14 @@ const (
 	defaultSessionSignalingListenAddr = "127.0.0.1:9876"
 	defaultSessionSignalingBaseURL    = "ws://127.0.0.1:9876/ws/signal"
 	gitPanelEventDebounceWindow       = 120 * time.Millisecond
+	gitPanelAuthorCacheTTL            = 15 * time.Minute
+	gitPanelAuthorMissTTL             = 5 * time.Minute
+	gitPanelRepoIdentityCacheTTL      = 10 * time.Minute
+	gitPanelAuthorLookupTimeout       = 4 * time.Second
+	gitPanelAuthorLookupPerRequest    = 40
 )
+
+var gitPanelCommitHashRegex = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
 
 type gitPanelInvalidationPlan struct {
 	Status    bool
@@ -62,6 +71,19 @@ type gitPanelPendingInvalidation struct {
 	history     bool
 	conflicts   bool
 	timer       *time.Timer
+}
+
+type gitPanelCommitAuthorCacheEntry struct {
+	login     string
+	avatarURL string
+	found     bool
+	expiresAt time.Time
+}
+
+type gitPanelRepoIdentityCacheEntry struct {
+	owner     string
+	repo      string
+	expiresAt time.Time
 }
 
 // App struct — ponto central do Wails, conecta todos os services
@@ -97,27 +119,34 @@ type App struct {
 	stackBuildStart   int64  // unix timestamp (seconds)
 	stackBuildResult  string // "", "success", "error"
 
-	gitIndexMu            sync.Mutex
-	lastIndexFingerprints map[string]string // repoPath -> fingerprint do estado staged
-	gitPanelEventsMu      sync.Mutex
-	gitPanelPendingEvents map[string]*gitPanelPendingInvalidation
-	anonymousGuestID      string
-	sessionGatewayOwner   bool
-	sessionGatewayAddr    string
-	sessionGatewayURL     string
-	signalingAddr         string
-	signalingURL          string
+	gitIndexMu             sync.Mutex
+	lastIndexFingerprints  map[string]string // repoPath -> fingerprint do estado staged
+	gitPanelEventsMu       sync.Mutex
+	gitPanelPendingEvents  map[string]*gitPanelPendingInvalidation
+	gitPanelAuthorMu       sync.Mutex
+	gitPanelAuthorCache    map[string]gitPanelCommitAuthorCacheEntry
+	gitPanelAuthorInFlight map[string]struct{}
+	gitPanelRepoIdentity   map[string]gitPanelRepoIdentityCacheEntry
+	anonymousGuestID       string
+	sessionGatewayOwner    bool
+	sessionGatewayAddr     string
+	sessionGatewayURL      string
+	signalingAddr          string
+	signalingURL           string
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		sessionContainers:     make(map[string]string),
-		terminalHistory:       make(map[string]string),
-		sessionAgents:         make(map[string]uint),
-		lastIndexFingerprints: make(map[string]string),
-		gitPanelPendingEvents: make(map[string]*gitPanelPendingInvalidation),
-		anonymousGuestID:      fmt.Sprintf("anonymous-%d", time.Now().UnixNano()),
+		sessionContainers:      make(map[string]string),
+		terminalHistory:        make(map[string]string),
+		sessionAgents:          make(map[string]uint),
+		lastIndexFingerprints:  make(map[string]string),
+		gitPanelPendingEvents:  make(map[string]*gitPanelPendingInvalidation),
+		gitPanelAuthorCache:    make(map[string]gitPanelCommitAuthorCacheEntry),
+		gitPanelAuthorInFlight: make(map[string]struct{}),
+		gitPanelRepoIdentity:   make(map[string]gitPanelRepoIdentityCacheEntry),
+		anonymousGuestID:       fmt.Sprintf("anonymous-%d", time.Now().UnixNano()),
 	}
 }
 
@@ -2780,7 +2809,396 @@ func (a *App) GitPanelGetHistory(repoPath string, cursor string, limit int, quer
 	if historyErr != nil {
 		return gp.HistoryPageDTO{}, a.normalizeGitPanelBindingError(historyErr)
 	}
+
+	repoRoot := strings.TrimSpace(repoPath)
+	if preflight, preflightErr := svc.Preflight(repoPath); preflightErr == nil {
+		if normalized := strings.TrimSpace(preflight.RepoRoot); normalized != "" {
+			repoRoot = normalized
+		}
+	}
+
+	a.enrichGitPanelHistoryWithAuthIdentity(repoRoot, &result)
 	return result, nil
+}
+
+func (a *App) enrichGitPanelHistoryWithAuthIdentity(repoRoot string, page *gp.HistoryPageDTO) {
+	if page == nil || len(page.Items) == 0 {
+		return
+	}
+
+	a.applyLocalAuthIdentityToHistory(page)
+
+	pendingHashes := a.applyCachedGitHubAuthorsToHistory(repoRoot, page)
+	if len(pendingHashes) == 0 {
+		return
+	}
+
+	a.queueGitHubAuthorEnrichment(repoRoot, pendingHashes)
+}
+
+func (a *App) applyLocalAuthIdentityToHistory(page *gp.HistoryPageDTO) {
+	if page == nil || len(page.Items) == 0 || a.auth == nil {
+		return
+	}
+
+	user, err := a.auth.GetCurrentUser()
+	if err != nil || user == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(user.Provider), "github") {
+		return
+	}
+
+	login := strings.TrimSpace(user.Username)
+	if login == "" {
+		login = strings.TrimSpace(user.Name)
+	}
+	avatarURL := strings.TrimSpace(user.AvatarURL)
+	if login == "" && avatarURL == "" {
+		return
+	}
+
+	emailToken := normalizeGitPanelIdentityToken(user.Email)
+	nameToken := normalizeGitPanelIdentityToken(user.Name)
+	usernameToken := normalizeGitPanelIdentityToken(user.Username)
+
+	for index := range page.Items {
+		item := &page.Items[index]
+		if !historyItemMatchesAuthUser(item, emailToken, nameToken, usernameToken) {
+			continue
+		}
+		item.GitHubLogin = login
+		item.GitHubAvatarURL = avatarURL
+	}
+}
+
+func (a *App) applyCachedGitHubAuthorsToHistory(repoRoot string, page *gp.HistoryPageDTO) []string {
+	if page == nil || len(page.Items) == 0 {
+		return nil
+	}
+
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" {
+		return nil
+	}
+
+	now := time.Now()
+	pending := make([]string, 0, gitPanelAuthorLookupPerRequest)
+
+	a.gitPanelAuthorMu.Lock()
+	defer a.gitPanelAuthorMu.Unlock()
+
+	for index := range page.Items {
+		item := &page.Items[index]
+		hash := normalizeGitPanelCommitHash(item.Hash)
+		if hash == "" {
+			continue
+		}
+		if strings.TrimSpace(item.GitHubLogin) != "" && strings.TrimSpace(item.GitHubAvatarURL) != "" {
+			continue
+		}
+
+		cacheKey := buildGitPanelCommitAuthorCacheKey(normalizedRoot, hash)
+		if cached, ok := a.gitPanelAuthorCache[cacheKey]; ok {
+			if now.After(cached.expiresAt) {
+				delete(a.gitPanelAuthorCache, cacheKey)
+			} else {
+				if cached.found {
+					if strings.TrimSpace(item.GitHubLogin) == "" {
+						item.GitHubLogin = cached.login
+					}
+					if strings.TrimSpace(item.GitHubAvatarURL) == "" {
+						item.GitHubAvatarURL = cached.avatarURL
+					}
+				}
+				continue
+			}
+		}
+
+		if len(pending) >= gitPanelAuthorLookupPerRequest {
+			continue
+		}
+		if _, inFlight := a.gitPanelAuthorInFlight[cacheKey]; inFlight {
+			continue
+		}
+
+		a.gitPanelAuthorInFlight[cacheKey] = struct{}{}
+		pending = append(pending, hash)
+	}
+
+	return pending
+}
+
+func (a *App) queueGitHubAuthorEnrichment(repoRoot string, hashes []string) {
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" || len(hashes) == 0 {
+		a.releaseGitPanelAuthorInFlight(normalizedRoot, hashes)
+		return
+	}
+	if a.github == nil || a.auth == nil {
+		a.releaseGitPanelAuthorInFlight(normalizedRoot, hashes)
+		return
+	}
+
+	authState := a.auth.GetAuthState()
+	if authState == nil || !authState.IsAuthenticated || !authState.HasGitHubToken {
+		a.releaseGitPanelAuthorInFlight(normalizedRoot, hashes)
+		return
+	}
+
+	go a.resolveGitHubAuthorsForHistory(normalizedRoot, hashes)
+}
+
+func (a *App) resolveGitHubAuthorsForHistory(repoRoot string, hashes []string) {
+	defer a.releaseGitPanelAuthorInFlight(repoRoot, hashes)
+
+	owner, repo, ok := a.resolveGitHubOwnerRepo(repoRoot)
+	if !ok {
+		a.cacheGitPanelAuthorMisses(repoRoot, hashes)
+		return
+	}
+
+	resolvedAuthors, err := a.github.ResolveCommitAuthors(owner, repo, hashes)
+	if err != nil {
+		log.Printf("[ORCH][GitPanel] resolve commit authors failed repo=%s remote=%s/%s err=%v", repoRoot, owner, repo, err)
+		return
+	}
+
+	a.applyResolvedGitHubAuthors(repoRoot, hashes, resolvedAuthors)
+}
+
+func (a *App) applyResolvedGitHubAuthors(repoRoot string, requestedHashes []string, resolved map[string]gh.User) {
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" || len(requestedHashes) == 0 {
+		return
+	}
+
+	now := time.Now()
+	updates := make([]map[string]string, 0, len(requestedHashes))
+
+	a.gitPanelAuthorMu.Lock()
+	for _, rawHash := range requestedHashes {
+		hash := normalizeGitPanelCommitHash(rawHash)
+		if hash == "" {
+			continue
+		}
+
+		cacheKey := buildGitPanelCommitAuthorCacheKey(normalizedRoot, hash)
+		user, ok := resolved[hash]
+		if !ok {
+			a.gitPanelAuthorCache[cacheKey] = gitPanelCommitAuthorCacheEntry{
+				found:     false,
+				expiresAt: now.Add(gitPanelAuthorMissTTL),
+			}
+			continue
+		}
+
+		login := strings.TrimSpace(user.Login)
+		if login == "" {
+			a.gitPanelAuthorCache[cacheKey] = gitPanelCommitAuthorCacheEntry{
+				found:     false,
+				expiresAt: now.Add(gitPanelAuthorMissTTL),
+			}
+			continue
+		}
+
+		avatarURL := strings.TrimSpace(user.AvatarURL)
+		a.gitPanelAuthorCache[cacheKey] = gitPanelCommitAuthorCacheEntry{
+			login:     login,
+			avatarURL: avatarURL,
+			found:     true,
+			expiresAt: now.Add(gitPanelAuthorCacheTTL),
+		}
+
+		updates = append(updates, map[string]string{
+			"hash":            hash,
+			"githubLogin":     login,
+			"githubAvatarUrl": avatarURL,
+		})
+	}
+	a.gitPanelAuthorMu.Unlock()
+
+	if len(updates) == 0 || a.ctx == nil {
+		return
+	}
+
+	runtime.EventsEmit(a.ctx, "gitpanel:history_authors_enriched", map[string]interface{}{
+		"repoPath": normalizedRoot,
+		"items":    updates,
+	})
+}
+
+func (a *App) cacheGitPanelAuthorMisses(repoRoot string, hashes []string) {
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" || len(hashes) == 0 {
+		return
+	}
+
+	now := time.Now()
+	a.gitPanelAuthorMu.Lock()
+	defer a.gitPanelAuthorMu.Unlock()
+
+	for _, rawHash := range hashes {
+		hash := normalizeGitPanelCommitHash(rawHash)
+		if hash == "" {
+			continue
+		}
+		cacheKey := buildGitPanelCommitAuthorCacheKey(normalizedRoot, hash)
+		a.gitPanelAuthorCache[cacheKey] = gitPanelCommitAuthorCacheEntry{
+			found:     false,
+			expiresAt: now.Add(gitPanelAuthorMissTTL),
+		}
+	}
+}
+
+func (a *App) releaseGitPanelAuthorInFlight(repoRoot string, hashes []string) {
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" || len(hashes) == 0 {
+		return
+	}
+
+	a.gitPanelAuthorMu.Lock()
+	defer a.gitPanelAuthorMu.Unlock()
+
+	for _, rawHash := range hashes {
+		hash := normalizeGitPanelCommitHash(rawHash)
+		if hash == "" {
+			continue
+		}
+		cacheKey := buildGitPanelCommitAuthorCacheKey(normalizedRoot, hash)
+		delete(a.gitPanelAuthorInFlight, cacheKey)
+	}
+}
+
+func (a *App) resolveGitHubOwnerRepo(repoRoot string) (string, string, bool) {
+	normalizedRoot := filepath.Clean(strings.TrimSpace(repoRoot))
+	if normalizedRoot == "" {
+		return "", "", false
+	}
+
+	now := time.Now()
+
+	a.gitPanelAuthorMu.Lock()
+	if cached, ok := a.gitPanelRepoIdentity[normalizedRoot]; ok && now.Before(cached.expiresAt) {
+		a.gitPanelAuthorMu.Unlock()
+		if cached.owner != "" && cached.repo != "" {
+			return cached.owner, cached.repo, true
+		}
+		return "", "", false
+	}
+	a.gitPanelAuthorMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gitPanelAuthorLookupTimeout)
+	defer cancel()
+
+	originOutput, err := exec.CommandContext(ctx, "git", "-C", normalizedRoot, "remote", "get-url", "origin").Output()
+	if err != nil {
+		a.gitPanelAuthorMu.Lock()
+		a.gitPanelRepoIdentity[normalizedRoot] = gitPanelRepoIdentityCacheEntry{
+			expiresAt: now.Add(gitPanelAuthorMissTTL),
+		}
+		a.gitPanelAuthorMu.Unlock()
+		return "", "", false
+	}
+
+	owner, repo, ok := parseGitHubOriginURL(string(originOutput))
+	a.gitPanelAuthorMu.Lock()
+	if ok {
+		a.gitPanelRepoIdentity[normalizedRoot] = gitPanelRepoIdentityCacheEntry{
+			owner:     owner,
+			repo:      repo,
+			expiresAt: now.Add(gitPanelRepoIdentityCacheTTL),
+		}
+	} else {
+		a.gitPanelRepoIdentity[normalizedRoot] = gitPanelRepoIdentityCacheEntry{
+			expiresAt: now.Add(gitPanelAuthorMissTTL),
+		}
+	}
+	a.gitPanelAuthorMu.Unlock()
+
+	return owner, repo, ok
+}
+
+func parseGitHubOriginURL(raw string) (string, string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", false
+	}
+
+	if strings.HasPrefix(trimmed, "git@github.com:") {
+		return splitGitHubOwnerRepo(strings.TrimPrefix(trimmed, "git@github.com:"))
+	}
+
+	parsedURL, err := url.Parse(trimmed)
+	if err != nil {
+		return "", "", false
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
+	if host != "github.com" {
+		return "", "", false
+	}
+
+	return splitGitHubOwnerRepo(strings.TrimPrefix(parsedURL.Path, "/"))
+}
+
+func splitGitHubOwnerRepo(pathValue string) (string, string, bool) {
+	trimmedPath := strings.TrimSpace(strings.TrimSuffix(pathValue, ".git"))
+	trimmedPath = strings.TrimPrefix(trimmedPath, "/")
+	segments := strings.Split(trimmedPath, "/")
+	if len(segments) < 2 {
+		return "", "", false
+	}
+
+	owner := strings.TrimSpace(segments[0])
+	repo := strings.TrimSpace(segments[1])
+	if owner == "" || repo == "" {
+		return "", "", false
+	}
+
+	return owner, repo, true
+}
+
+func normalizeGitPanelCommitHash(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" || !gitPanelCommitHashRegex.MatchString(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+func buildGitPanelCommitAuthorCacheKey(repoRoot string, hash string) string {
+	root := filepath.Clean(strings.TrimSpace(repoRoot))
+	normalizedHash := normalizeGitPanelCommitHash(hash)
+	if root == "" || normalizedHash == "" {
+		return ""
+	}
+	return root + "|" + normalizedHash
+}
+
+func historyItemMatchesAuthUser(item *gp.HistoryItemDTO, emailToken string, nameToken string, usernameToken string) bool {
+	if item == nil {
+		return false
+	}
+
+	authorToken := normalizeGitPanelIdentityToken(item.Author)
+	authorEmailToken := normalizeGitPanelIdentityToken(item.AuthorEmail)
+
+	if emailToken != "" && authorEmailToken != "" && emailToken == authorEmailToken {
+		return true
+	}
+	if nameToken != "" && authorToken != "" && nameToken == authorToken {
+		return true
+	}
+	if usernameToken != "" && authorToken != "" && usernameToken == authorToken {
+		return true
+	}
+
+	return false
+}
+
+func normalizeGitPanelIdentityToken(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 // GitPanelGetDiff retorna diff textual base para o frontend.

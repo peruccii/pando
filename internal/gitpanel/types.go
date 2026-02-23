@@ -36,11 +36,17 @@ type StatusDTO struct {
 
 // HistoryItemDTO representa item do histórico linear.
 type HistoryItemDTO struct {
-	Hash       string `json:"hash"`
-	ShortHash  string `json:"shortHash"`
-	Author     string `json:"author"`
-	AuthoredAt string `json:"authoredAt"`
-	Subject    string `json:"subject"`
+	Hash            string `json:"hash"`
+	ShortHash       string `json:"shortHash"`
+	Author          string `json:"author"`
+	AuthoredAt      string `json:"authoredAt"`
+	Subject         string `json:"subject"`
+	Additions       int    `json:"additions"`
+	Deletions       int    `json:"deletions"`
+	ChangedFiles    int    `json:"changedFiles"`
+	GitHubLogin     string `json:"githubLogin,omitempty"`
+	GitHubAvatarURL string `json:"githubAvatarUrl,omitempty"`
+	AuthorEmail     string `json:"-"`
 }
 
 // HistoryPageDTO representa página de histórico paginado.

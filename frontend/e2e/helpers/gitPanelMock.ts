@@ -58,15 +58,26 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
         author: string
         authoredAt: string
         subject: string
+        additions: number
+        deletions: number
+        changedFiles: number
+        githubLogin?: string
+        githubAvatarUrl?: string
       }> = []
       for (let i = 0; i < count; i += 1) {
         const hash = `${(i + 1).toString(16).padStart(40, 'a')}`.slice(0, 40)
+        const githubLogin = i % 2 === 0 ? 'alice-dev' : 'bob-dev'
         out.push({
           hash,
           shortHash: hash.slice(0, 8),
           author: i % 2 === 0 ? 'Alice' : 'Bob',
           authoredAt: new Date(Date.now() - i * 120_000).toISOString(),
           subject: `feat(mock): commit ${i + 1}`,
+          additions: (i % 9) + 1,
+          deletions: i % 4,
+          changedFiles: (i % 5) + 1,
+          githubLogin,
+          githubAvatarUrl: `https://avatars.githubusercontent.com/${githubLogin}`,
         })
       }
       return out

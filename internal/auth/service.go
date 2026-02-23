@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"orch/internal/database"
@@ -468,8 +469,10 @@ func (s *Service) fetchUserProfile(accessToken string) (*User, error) {
 			Provider string `json:"provider"`
 		} `json:"app_metadata"`
 		UserMetadata struct {
-			Name      string `json:"full_name"`
-			AvatarURL string `json:"avatar_url"`
+			Name              string `json:"full_name"`
+			Username          string `json:"user_name"`
+			PreferredUsername string `json:"preferred_username"`
+			AvatarURL         string `json:"avatar_url"`
 		} `json:"user_metadata"`
 	}
 
@@ -477,10 +480,20 @@ func (s *Service) fetchUserProfile(accessToken string) (*User, error) {
 		return nil, fmt.Errorf("failed to parse user profile: %w", err)
 	}
 
+	resolvedName := strings.TrimSpace(userResp.UserMetadata.Name)
+	resolvedUsername := strings.TrimSpace(userResp.UserMetadata.Username)
+	if resolvedUsername == "" {
+		resolvedUsername = strings.TrimSpace(userResp.UserMetadata.PreferredUsername)
+	}
+	if resolvedName == "" {
+		resolvedName = resolvedUsername
+	}
+
 	return &User{
 		ID:        userResp.ID,
 		Email:     userResp.Email,
-		Name:      userResp.UserMetadata.Name,
+		Name:      resolvedName,
+		Username:  resolvedUsername,
 		AvatarURL: userResp.UserMetadata.AvatarURL,
 		Provider:  userResp.AppMetadata.Provider,
 	}, nil

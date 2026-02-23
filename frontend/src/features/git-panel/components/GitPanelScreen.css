@@ -356,7 +356,7 @@
 }
 
 .git-panel-log__row {
-  min-height: 56px;
+  min-height: 86px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: rgba(12, 17, 29, 0.58);
@@ -391,10 +391,44 @@
   margin-bottom: 4px;
 }
 
+.git-panel-log__row-author {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.git-panel-log__avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(21, 31, 48, 0.9);
+  flex-shrink: 0;
+}
+
+.git-panel-log__avatar--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.git-panel-log__author-name {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .git-panel-log__row-meta {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
   color: var(--git-panel-text-muted);
   font-size: var(--text-xs);
 }
@@ -402,6 +436,18 @@
 .git-panel-log__row-meta code {
   font-family: var(--font-mono);
   color: var(--accent-hover);
+}
+
+.git-panel-log__metric {
+  font-family: var(--font-mono);
+}
+
+.git-panel-log__metric--positive {
+  color: #7de08c;
+}
+
+.git-panel-log__metric--negative {
+  color: #ff9f97;
 }
 
 .git-panel-log__row--loading {
