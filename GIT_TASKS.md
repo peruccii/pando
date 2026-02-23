@@ -64,7 +64,7 @@
 
 ## Gates finais (obrigatorio para marcar rollout)
 
-[x] `go test ./...` verde no CI e local - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
+[] `go test ./...` verde no CI e local - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
 [x] `npm --prefix frontend run build` verde no CI e local - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
 [x] E2E critico do Git Panel verde em ambiente limpo - [git_specs/test_strategy.md](git_specs/test_strategy.md)  
 [x] Budget de performance validado com evidencias (latencia, CPU em burst de watcher, responsividade) - [git_specs/performance_reliability.md](git_specs/performance_reliability.md)  
