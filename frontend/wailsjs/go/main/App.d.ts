@@ -141,6 +141,10 @@ export function GitPanelAcceptTheirs(arg1:string,arg2:string,arg3:boolean):Promi
 
 export function GitPanelDiscardFile(arg1:string,arg2:string):Promise<void>;
 
+export function GitPanelGetCommitDetails(arg1:string,arg2:string):Promise<gitpanel.CommitDetailsDTO>;
+
+export function GitPanelGetCommitDiff(arg1:string,arg2:string,arg3:string,arg4:number):Promise<gitpanel.DiffDTO>;
+
 export function GitPanelGetConflicts(arg1:string):Promise<Array<gitpanel.ConflictFileDTO>>;
 
 export function GitPanelGetDiff(arg1:string,arg2:string,arg3:string,arg4:number):Promise<gitpanel.DiffDTO>;
@@ -150,6 +154,36 @@ export function GitPanelGetHistory(arg1:string,arg2:string,arg3:number,arg4:stri
 export function GitPanelGetStatus(arg1:string):Promise<gitpanel.StatusDTO>;
 
 export function GitPanelOpenExternalMergeTool(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelPRCheckMerged(arg1:string,arg2:number):Promise<boolean>;
+
+export function GitPanelPRCreate(arg1:string,arg2:main.GitPanelPRCreatePayloadDTO):Promise<github.PullRequest>;
+
+export function GitPanelPRCreateLabel(arg1:string,arg2:main.GitPanelPRCreateLabelPayloadDTO):Promise<github.Label>;
+
+export function GitPanelPRCreateLocalBranch(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function GitPanelPRGet(arg1:string,arg2:number):Promise<github.PullRequest>;
+
+export function GitPanelPRGetCommitRawDiff(arg1:string,arg2:number,arg3:string):Promise<string>;
+
+export function GitPanelPRGetCommits(arg1:string,arg2:number,arg3:number,arg4:number):Promise<github.PRCommitPage>;
+
+export function GitPanelPRGetFiles(arg1:string,arg2:number,arg3:number,arg4:number):Promise<github.PRFilePage>;
+
+export function GitPanelPRGetRawDiff(arg1:string,arg2:number):Promise<string>;
+
+export function GitPanelPRList(arg1:string,arg2:string,arg3:number,arg4:number):Promise<Array<github.PullRequest>>;
+
+export function GitPanelPRMerge(arg1:string,arg2:number,arg3:main.GitPanelPRMergePayloadDTO):Promise<main.GitPanelPRMergeResultDTO>;
+
+export function GitPanelPRPushLocalBranch(arg1:string,arg2:string):Promise<void>;
+
+export function GitPanelPRResolveRepository(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<main.GitPanelPRRepositoryTargetDTO>;
+
+export function GitPanelPRUpdate(arg1:string,arg2:number,arg3:main.GitPanelPRUpdatePayloadDTO):Promise<github.PullRequest>;
+
+export function GitPanelPRUpdateBranch(arg1:string,arg2:number,arg3:main.GitPanelPRUpdateBranchPayloadDTO):Promise<main.GitPanelPRUpdateBranchResultDTO>;
 
 export function GitPanelPickRepositoryDirectory(arg1:string):Promise<string>;
 

@@ -56,6 +56,18 @@ type HistoryPageDTO struct {
 	HasMore    bool             `json:"hasMore"`
 }
 
+// CommitFileDTO representa arquivo alterado num commit.
+type CommitFileDTO struct {
+	Path   string `json:"path"`
+	Status string `json:"status"` // M, A, D, R, etc.
+}
+
+// CommitDetailsDTO representa detalhes de um commit específico.
+type CommitDetailsDTO struct {
+	Hash  string          `json:"hash"`
+	Files []CommitFileDTO `json:"files"`
+}
+
 // DiffLineDTO representa linha individual no diff estruturado.
 type DiffLineDTO struct {
 	Type    string `json:"type"`

@@ -262,6 +262,14 @@ export function GitPanelDiscardFile(arg1, arg2) {
   return window['go']['main']['App']['GitPanelDiscardFile'](arg1, arg2);
 }
 
+export function GitPanelGetCommitDetails(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelGetCommitDetails'](arg1, arg2);
+}
+
+export function GitPanelGetCommitDiff(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelGetCommitDiff'](arg1, arg2, arg3, arg4);
+}
+
 export function GitPanelGetConflicts(arg1) {
   return window['go']['main']['App']['GitPanelGetConflicts'](arg1);
 }
@@ -280,6 +288,66 @@ export function GitPanelGetStatus(arg1) {
 
 export function GitPanelOpenExternalMergeTool(arg1, arg2) {
   return window['go']['main']['App']['GitPanelOpenExternalMergeTool'](arg1, arg2);
+}
+
+export function GitPanelPRCheckMerged(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRCheckMerged'](arg1, arg2);
+}
+
+export function GitPanelPRCreate(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRCreate'](arg1, arg2);
+}
+
+export function GitPanelPRCreateLabel(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRCreateLabel'](arg1, arg2);
+}
+
+export function GitPanelPRCreateLocalBranch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelPRCreateLocalBranch'](arg1, arg2, arg3);
+}
+
+export function GitPanelPRGet(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRGet'](arg1, arg2);
+}
+
+export function GitPanelPRGetCommitRawDiff(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelPRGetCommitRawDiff'](arg1, arg2, arg3);
+}
+
+export function GitPanelPRGetCommits(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelPRGetCommits'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelPRGetFiles(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelPRGetFiles'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelPRGetRawDiff(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRGetRawDiff'](arg1, arg2);
+}
+
+export function GitPanelPRList(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelPRList'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelPRMerge(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelPRMerge'](arg1, arg2, arg3);
+}
+
+export function GitPanelPRPushLocalBranch(arg1, arg2) {
+  return window['go']['main']['App']['GitPanelPRPushLocalBranch'](arg1, arg2);
+}
+
+export function GitPanelPRResolveRepository(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GitPanelPRResolveRepository'](arg1, arg2, arg3, arg4);
+}
+
+export function GitPanelPRUpdate(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelPRUpdate'](arg1, arg2, arg3);
+}
+
+export function GitPanelPRUpdateBranch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GitPanelPRUpdateBranch'](arg1, arg2, arg3);
 }
 
 export function GitPanelPickRepositoryDirectory(arg1) {

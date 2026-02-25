@@ -1,0 +1,862 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - button "Collaboration options" [ref=e7] [cursor=pointer]:
+        - img [ref=e8]
+        - generic [ref=e13]: Collab
+        - img [ref=e14]
+      - button "Configurações" [ref=e16] [cursor=pointer]:
+        - img [ref=e17]
+      - 'button "Mudar tema (atual: Dark)" [ref=e20] [cursor=pointer]': 🌙
+  - generic [ref=e21]:
+    - tab "Mock 0 terminais abertos" [ref=e23] [cursor=pointer]:
+      - generic [ref=e24]: Mock
+      - generic "0 terminais abertos" [ref=e25]: "0"
+    - button "Novo workspace" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+  - main [ref=e28]:
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - img
+          - heading [level=1]: ORCH
+          - paragraph: Orquestrador colaborativo de IA e GitHub
+          - generic:
+            - button:
+              - img
+              - text: Novo Terminal
+            - button:
+              - img
+              - text: AI Agent
+            - button:
+              - img
+              - text: GitHub
+          - generic:
+            - generic:
+              - generic: ⌘ N
+              - generic: Novo terminal
+            - generic:
+              - generic: ⌘ K
+              - generic: Command palette
+            - generic:
+              - generic: ⌘⇧ D
+              - generic: Alternar tema
+          - generic: v0.1.0-test
+    - dialog [ref=e29]:
+      - region "Git Panel" [ref=e30]:
+        - generic [ref=e31]:
+          - button "Voltar para o Command Center" [ref=e32] [cursor=pointer]:
+            - img [ref=e33]
+          - group "Seleção de repositório" [ref=e36]:
+            - generic "/mock/repo" [ref=e37]:
+              - generic [ref=e38]:
+                - img [ref=e39]
+                - text: Repositório
+              - generic [ref=e41]: /mock/repo
+            - button "Trocar repositório" [ref=e42] [cursor=pointer]:
+              - img [ref=e43]
+              - text: Trocar
+          - navigation "Modo do Git Panel" [ref=e45]:
+            - button "Local Git" [ref=e46]
+            - button "PRs" [ref=e47]:
+              - img [ref=e48]
+              - text: PRs
+        - region "Git Panel Pull Requests" [ref=e52]:
+          - complementary "Lista de Pull Requests" [ref=e53]:
+            - generic [ref=e54]:
+              - heading "Pull Requests 21" [level=2] [ref=e55]:
+                - img [ref=e56]
+                - text: Pull Requests
+                - generic [ref=e60]: "21"
+              - generic [ref=e61]: Página 1
+            - generic [ref=e62]:
+              - generic [ref=e63]:
+                - img
+                - searchbox [ref=e64]
+              - button "Atualizar" [ref=e65] [cursor=pointer]:
+                - img [ref=e66]
+                - text: Atualizar
+            - generic [ref=e71]:
+              - button "Open" [ref=e72]
+              - button "Closed" [ref=e73]
+              - button "All" [ref=e74]
+            - generic [ref=e75]:
+              - generic [ref=e76]: 21 visível(is)
+              - generic [ref=e77]: 21 open
+              - generic [ref=e78]: 0 closed
+              - generic [ref=e79]: 0 merged
+              - generic [ref=e80]: 3 draft
+            - generic [ref=e81]:
+              - generic [ref=e82]:
+                - button "Fechar PR" [ref=e83] [cursor=pointer]
+                - button "Nova etiqueta" [ref=e84] [cursor=pointer]
+              - generic [ref=e85]:
+                - generic [ref=e86]:
+                  - generic [ref=e87]: Titulo *
+                  - textbox "Titulo *" [active] [ref=e88]:
+                    - /placeholder: "Ex: feat: adicionar fluxo de pagamento"
+                    - text: "feat(e2e): fluxo critico de PR"
+                - generic [ref=e89]:
+                  - generic [ref=e90]:
+                    - checkbox "Modo avancado (fork + override manual)" [ref=e91]
+                    - text: Modo avancado (fork + override manual)
+                  - button "Atualizar contexto" [ref=e92] [cursor=pointer]
+                - status [ref=e93]:
+                  - generic [ref=e94]:
+                    - text: "Branch atual:"
+                    - code [ref=e95]: "-"
+                  - generic [ref=e96]: "Ahead: -"
+                  - generic [ref=e97]: "Destino: -"
+                - generic [ref=e98]:
+                  - generic [ref=e99]: Head (branch atual) *
+                  - textbox "Head (branch atual) *" [ref=e100]:
+                    - /placeholder: Branch atual
+                  - generic [ref=e101]: Head automatico da branch atual (read-only).
+                - generic [ref=e102]:
+                  - generic [ref=e103]: Base *
+                  - combobox "Base *" [ref=e104]:
+                    - option "main" [selected]
+                  - generic [ref=e105]:
+                    - text: Base default em
+                    - code [ref=e106]: main
+                    - text: ", carregada via dropdown do repositório alvo."
+                - generic [ref=e107]:
+                  - generic [ref=e108]: Descricao (opcional)
+                  - textbox "Descricao (opcional)" [ref=e109]:
+                    - /placeholder: Contexto da PR, escopo, riscos e validacoes.
+                - generic [ref=e110]:
+                  - checkbox "Criar como draft" [ref=e111]
+                  - text: Criar como draft
+                - generic [ref=e112]:
+                  - checkbox "Permitir alteracoes por mantenedores" [checked] [ref=e113]
+                  - text: Permitir alteracoes por mantenedores
+                - generic [ref=e114]:
+                  - button "Cancelar" [ref=e115] [cursor=pointer]
+                  - button "Criar PR" [ref=e116] [cursor=pointer]
+            - listbox "Pull Requests":
+              - listitem [ref=e117]:
+                - 'button "#1201 open feat(mock): fluxo 1201 @bob-dev in 1 minute +23 -10 11 arquivo(s) feature/mock-1201 main" [ref=e118]':
+                  - generic [ref=e119]:
+                    - strong [ref=e120]: "#1201"
+                    - generic [ref=e121]: open
+                  - generic [ref=e122]:
+                    - img [ref=e123]
+                    - generic [ref=e127]: "feat(mock): fluxo 1201"
+                  - generic [ref=e128]:
+                    - generic [ref=e129]: "@bob-dev"
+                    - generic [ref=e130]: in 1 minute
+                  - generic [ref=e131]:
+                    - generic [ref=e132]: "+23"
+                    - generic [ref=e133]: "-10"
+                    - generic [ref=e134]: 11 arquivo(s)
+                  - generic [ref=e135]:
+                    - code [ref=e136]: feature/mock-1201
+                    - generic [ref=e137]: →
+                    - code [ref=e138]: main
+              - listitem [ref=e139]:
+                - 'button "#1202 open feat(mock): fluxo 1202 @alice-dev in 1 minute +26 -12 12 arquivo(s) feature/mock-1202 main" [ref=e140]':
+                  - generic [ref=e141]:
+                    - strong [ref=e142]: "#1202"
+                    - generic [ref=e143]: open
+                  - generic [ref=e144]:
+                    - img [ref=e145]
+                    - generic [ref=e149]: "feat(mock): fluxo 1202"
+                  - generic [ref=e150]:
+                    - generic [ref=e151]: "@alice-dev"
+                    - generic [ref=e152]: in 1 minute
+                  - generic [ref=e153]:
+                    - generic [ref=e154]: "+26"
+                    - generic [ref=e155]: "-12"
+                    - generic [ref=e156]: 12 arquivo(s)
+                  - generic [ref=e157]:
+                    - code [ref=e158]: feature/mock-1202
+                    - generic [ref=e159]: →
+                    - code [ref=e160]: main
+              - listitem [ref=e161]:
+                - 'button "#1203 open feat(mock): fluxo 1203 @bob-dev in 1 minute +29 -14 13 arquivo(s) feature/mock-1203 main" [ref=e162]':
+                  - generic [ref=e163]:
+                    - strong [ref=e164]: "#1203"
+                    - generic [ref=e165]: open
+                  - generic [ref=e166]:
+                    - img [ref=e167]
+                    - generic [ref=e171]: "feat(mock): fluxo 1203"
+                  - generic [ref=e172]:
+                    - generic [ref=e173]: "@bob-dev"
+                    - generic [ref=e174]: in 1 minute
+                  - generic [ref=e175]:
+                    - generic [ref=e176]: "+29"
+                    - generic [ref=e177]: "-14"
+                    - generic [ref=e178]: 13 arquivo(s)
+                  - generic [ref=e179]:
+                    - code [ref=e180]: feature/mock-1203
+                    - generic [ref=e181]: →
+                    - code [ref=e182]: main
+              - listitem [ref=e183]:
+                - 'button "#1204 open feat(mock): fluxo 1204 @alice-dev in 1 minute +32 -16 14 arquivo(s) feature/mock-1204 main" [ref=e184]':
+                  - generic [ref=e185]:
+                    - strong [ref=e186]: "#1204"
+                    - generic [ref=e187]: open
+                  - generic [ref=e188]:
+                    - img [ref=e189]
+                    - generic [ref=e193]: "feat(mock): fluxo 1204"
+                  - generic [ref=e194]:
+                    - generic [ref=e195]: "@alice-dev"
+                    - generic [ref=e196]: in 1 minute
+                  - generic [ref=e197]:
+                    - generic [ref=e198]: "+32"
+                    - generic [ref=e199]: "-16"
+                    - generic [ref=e200]: 14 arquivo(s)
+                  - generic [ref=e201]:
+                    - code [ref=e202]: feature/mock-1204
+                    - generic [ref=e203]: →
+                    - code [ref=e204]: main
+              - listitem [ref=e205]:
+                - 'button "#1205 open feat(mock): fluxo 1205 @bob-dev in 1 minute +35 -8 15 arquivo(s) feature/mock-1205 main" [ref=e206]':
+                  - generic [ref=e207]:
+                    - strong [ref=e208]: "#1205"
+                    - generic [ref=e209]: open
+                  - generic [ref=e210]:
+                    - img [ref=e211]
+                    - generic [ref=e215]: "feat(mock): fluxo 1205"
+                  - generic [ref=e216]:
+                    - generic [ref=e217]: "@bob-dev"
+                    - generic [ref=e218]: in 1 minute
+                  - generic [ref=e219]:
+                    - generic [ref=e220]: "+35"
+                    - generic [ref=e221]: "-8"
+                    - generic [ref=e222]: 15 arquivo(s)
+                  - generic [ref=e223]:
+                    - code [ref=e224]: feature/mock-1205
+                    - generic [ref=e225]: →
+                    - code [ref=e226]: main
+              - listitem [ref=e227]:
+                - 'button "#1207 open feat(mock): fluxo 1207 @bob-dev in 1 minute Draft +41 -12 11 arquivo(s) feature/mock-1207 main" [ref=e228]':
+                  - generic [ref=e229]:
+                    - strong [ref=e230]: "#1207"
+                    - generic [ref=e231]: open
+                  - generic [ref=e232]:
+                    - img [ref=e233]
+                    - generic [ref=e237]: "feat(mock): fluxo 1207"
+                  - generic [ref=e238]:
+                    - generic [ref=e239]: "@bob-dev"
+                    - generic [ref=e240]: in 1 minute
+                    - generic [ref=e241]: Draft
+                  - generic [ref=e242]:
+                    - generic [ref=e243]: "+41"
+                    - generic [ref=e244]: "-12"
+                    - generic [ref=e245]: 11 arquivo(s)
+                  - generic [ref=e246]:
+                    - code [ref=e247]: feature/mock-1207
+                    - generic [ref=e248]: →
+                    - code [ref=e249]: main
+              - listitem [ref=e250]:
+                - 'button "#1208 open feat(mock): fluxo 1208 @alice-dev in 1 minute +44 -14 12 arquivo(s) feature/mock-1208 main" [ref=e251]':
+                  - generic [ref=e252]:
+                    - strong [ref=e253]: "#1208"
+                    - generic [ref=e254]: open
+                  - generic [ref=e255]:
+                    - img [ref=e256]
+                    - generic [ref=e260]: "feat(mock): fluxo 1208"
+                  - generic [ref=e261]:
+                    - generic [ref=e262]: "@alice-dev"
+                    - generic [ref=e263]: in 1 minute
+                  - generic [ref=e264]:
+                    - generic [ref=e265]: "+44"
+                    - generic [ref=e266]: "-14"
+                    - generic [ref=e267]: 12 arquivo(s)
+                  - generic [ref=e268]:
+                    - code [ref=e269]: feature/mock-1208
+                    - generic [ref=e270]: →
+                    - code [ref=e271]: main
+              - listitem [ref=e272]:
+                - 'button "#1209 open feat(mock): fluxo 1209 @bob-dev in 1 minute +20 -16 13 arquivo(s) feature/mock-1209 main" [ref=e273]':
+                  - generic [ref=e274]:
+                    - strong [ref=e275]: "#1209"
+                    - generic [ref=e276]: open
+                  - generic [ref=e277]:
+                    - img [ref=e278]
+                    - generic [ref=e282]: "feat(mock): fluxo 1209"
+                  - generic [ref=e283]:
+                    - generic [ref=e284]: "@bob-dev"
+                    - generic [ref=e285]: in 1 minute
+                  - generic [ref=e286]:
+                    - generic [ref=e287]: "+20"
+                    - generic [ref=e288]: "-16"
+                    - generic [ref=e289]: 13 arquivo(s)
+                  - generic [ref=e290]:
+                    - code [ref=e291]: feature/mock-1209
+                    - generic [ref=e292]: →
+                    - code [ref=e293]: main
+              - listitem [ref=e294]:
+                - 'button "#1210 open feat(mock): fluxo 1210 @alice-dev in 1 minute +23 -8 14 arquivo(s) feature/mock-1210 main" [ref=e295]':
+                  - generic [ref=e296]:
+                    - strong [ref=e297]: "#1210"
+                    - generic [ref=e298]: open
+                  - generic [ref=e299]:
+                    - img [ref=e300]
+                    - generic [ref=e304]: "feat(mock): fluxo 1210"
+                  - generic [ref=e305]:
+                    - generic [ref=e306]: "@alice-dev"
+                    - generic [ref=e307]: in 1 minute
+                  - generic [ref=e308]:
+                    - generic [ref=e309]: "+23"
+                    - generic [ref=e310]: "-8"
+                    - generic [ref=e311]: 14 arquivo(s)
+                  - generic [ref=e312]:
+                    - code [ref=e313]: feature/mock-1210
+                    - generic [ref=e314]: →
+                    - code [ref=e315]: main
+              - listitem [ref=e316]:
+                - 'button "#1213 open feat(mock): fluxo 1213 @bob-dev in 1 minute +32 -14 11 arquivo(s) feature/mock-1213 main" [ref=e317]':
+                  - generic [ref=e318]:
+                    - strong [ref=e319]: "#1213"
+                    - generic [ref=e320]: open
+                  - generic [ref=e321]:
+                    - img [ref=e322]
+                    - generic [ref=e326]: "feat(mock): fluxo 1213"
+                  - generic [ref=e327]:
+                    - generic [ref=e328]: "@bob-dev"
+                    - generic [ref=e329]: in 1 minute
+                  - generic [ref=e330]:
+                    - generic [ref=e331]: "+32"
+                    - generic [ref=e332]: "-14"
+                    - generic [ref=e333]: 11 arquivo(s)
+                  - generic [ref=e334]:
+                    - code [ref=e335]: feature/mock-1213
+                    - generic [ref=e336]: →
+                    - code [ref=e337]: main
+              - listitem [ref=e338]:
+                - 'button "#1214 open feat(mock): fluxo 1214 @alice-dev in 1 minute Draft +35 -16 12 arquivo(s) feature/mock-1214 main" [ref=e339]':
+                  - generic [ref=e340]:
+                    - strong [ref=e341]: "#1214"
+                    - generic [ref=e342]: open
+                  - generic [ref=e343]:
+                    - img [ref=e344]
+                    - generic [ref=e348]: "feat(mock): fluxo 1214"
+                  - generic [ref=e349]:
+                    - generic [ref=e350]: "@alice-dev"
+                    - generic [ref=e351]: in 1 minute
+                    - generic [ref=e352]: Draft
+                  - generic [ref=e353]:
+                    - generic [ref=e354]: "+35"
+                    - generic [ref=e355]: "-16"
+                    - generic [ref=e356]: 12 arquivo(s)
+                  - generic [ref=e357]:
+                    - code [ref=e358]: feature/mock-1214
+                    - generic [ref=e359]: →
+                    - code [ref=e360]: main
+              - listitem [ref=e361]:
+                - 'button "#1215 open feat(mock): fluxo 1215 @bob-dev in 1 minute +38 -8 13 arquivo(s) feature/mock-1215 main" [ref=e362]':
+                  - generic [ref=e363]:
+                    - strong [ref=e364]: "#1215"
+                    - generic [ref=e365]: open
+                  - generic [ref=e366]:
+                    - img [ref=e367]
+                    - generic [ref=e371]: "feat(mock): fluxo 1215"
+                  - generic [ref=e372]:
+                    - generic [ref=e373]: "@bob-dev"
+                    - generic [ref=e374]: in 1 minute
+                  - generic [ref=e375]:
+                    - generic [ref=e376]: "+38"
+                    - generic [ref=e377]: "-8"
+                    - generic [ref=e378]: 13 arquivo(s)
+                  - generic [ref=e379]:
+                    - code [ref=e380]: feature/mock-1215
+                    - generic [ref=e381]: →
+                    - code [ref=e382]: main
+              - listitem [ref=e383]:
+                - 'button "#1216 open feat(mock): fluxo 1216 @alice-dev in 1 minute +41 -10 14 arquivo(s) feature/mock-1216 main" [ref=e384]':
+                  - generic [ref=e385]:
+                    - strong [ref=e386]: "#1216"
+                    - generic [ref=e387]: open
+                  - generic [ref=e388]:
+                    - img [ref=e389]
+                    - generic [ref=e393]: "feat(mock): fluxo 1216"
+                  - generic [ref=e394]:
+                    - generic [ref=e395]: "@alice-dev"
+                    - generic [ref=e396]: in 1 minute
+                  - generic [ref=e397]:
+                    - generic [ref=e398]: "+41"
+                    - generic [ref=e399]: "-10"
+                    - generic [ref=e400]: 14 arquivo(s)
+                  - generic [ref=e401]:
+                    - code [ref=e402]: feature/mock-1216
+                    - generic [ref=e403]: →
+                    - code [ref=e404]: main
+              - listitem [ref=e405]:
+                - 'button "#1217 open feat(mock): fluxo 1217 @bob-dev in 1 minute +44 -12 15 arquivo(s) feature/mock-1217 main" [ref=e406]':
+                  - generic [ref=e407]:
+                    - strong [ref=e408]: "#1217"
+                    - generic [ref=e409]: open
+                  - generic [ref=e410]:
+                    - img [ref=e411]
+                    - generic [ref=e415]: "feat(mock): fluxo 1217"
+                  - generic [ref=e416]:
+                    - generic [ref=e417]: "@bob-dev"
+                    - generic [ref=e418]: in 1 minute
+                  - generic [ref=e419]:
+                    - generic [ref=e420]: "+44"
+                    - generic [ref=e421]: "-12"
+                    - generic [ref=e422]: 15 arquivo(s)
+                  - generic [ref=e423]:
+                    - code [ref=e424]: feature/mock-1217
+                    - generic [ref=e425]: →
+                    - code [ref=e426]: main
+              - listitem [ref=e427]:
+                - 'button "#1219 open feat(mock): fluxo 1219 @bob-dev in 1 minute +23 -16 11 arquivo(s) feature/mock-1219 main" [ref=e428]':
+                  - generic [ref=e429]:
+                    - strong [ref=e430]: "#1219"
+                    - generic [ref=e431]: open
+                  - generic [ref=e432]:
+                    - img [ref=e433]
+                    - generic [ref=e437]: "feat(mock): fluxo 1219"
+                  - generic [ref=e438]:
+                    - generic [ref=e439]: "@bob-dev"
+                    - generic [ref=e440]: in 1 minute
+                  - generic [ref=e441]:
+                    - generic [ref=e442]: "+23"
+                    - generic [ref=e443]: "-16"
+                    - generic [ref=e444]: 11 arquivo(s)
+                  - generic [ref=e445]:
+                    - code [ref=e446]: feature/mock-1219
+                    - generic [ref=e447]: →
+                    - code [ref=e448]: main
+              - listitem [ref=e449]:
+                - 'button "#1220 open feat(mock): fluxo 1220 @alice-dev in 1 minute +26 -8 12 arquivo(s) feature/mock-1220 main" [ref=e450]':
+                  - generic [ref=e451]:
+                    - strong [ref=e452]: "#1220"
+                    - generic [ref=e453]: open
+                  - generic [ref=e454]:
+                    - img [ref=e455]
+                    - generic [ref=e459]: "feat(mock): fluxo 1220"
+                  - generic [ref=e460]:
+                    - generic [ref=e461]: "@alice-dev"
+                    - generic [ref=e462]: in 1 minute
+                  - generic [ref=e463]:
+                    - generic [ref=e464]: "+26"
+                    - generic [ref=e465]: "-8"
+                    - generic [ref=e466]: 12 arquivo(s)
+                  - generic [ref=e467]:
+                    - code [ref=e468]: feature/mock-1220
+                    - generic [ref=e469]: →
+                    - code [ref=e470]: main
+              - listitem [ref=e471]:
+                - 'button "#1221 open feat(mock): fluxo 1221 @bob-dev in 1 minute Draft +29 -10 13 arquivo(s) feature/mock-1221 main" [ref=e472]':
+                  - generic [ref=e473]:
+                    - strong [ref=e474]: "#1221"
+                    - generic [ref=e475]: open
+                  - generic [ref=e476]:
+                    - img [ref=e477]
+                    - generic [ref=e481]: "feat(mock): fluxo 1221"
+                  - generic [ref=e482]:
+                    - generic [ref=e483]: "@bob-dev"
+                    - generic [ref=e484]: in 1 minute
+                    - generic [ref=e485]: Draft
+                  - generic [ref=e486]:
+                    - generic [ref=e487]: "+29"
+                    - generic [ref=e488]: "-10"
+                    - generic [ref=e489]: 13 arquivo(s)
+                  - generic [ref=e490]:
+                    - code [ref=e491]: feature/mock-1221
+                    - generic [ref=e492]: →
+                    - code [ref=e493]: main
+              - listitem [ref=e494]:
+                - 'button "#1223 open feat(mock): fluxo 1223 @bob-dev in 1 minute +35 -14 15 arquivo(s) feature/mock-1223 main" [ref=e495]':
+                  - generic [ref=e496]:
+                    - strong [ref=e497]: "#1223"
+                    - generic [ref=e498]: open
+                  - generic [ref=e499]:
+                    - img [ref=e500]
+                    - generic [ref=e504]: "feat(mock): fluxo 1223"
+                  - generic [ref=e505]:
+                    - generic [ref=e506]: "@bob-dev"
+                    - generic [ref=e507]: in 1 minute
+                  - generic [ref=e508]:
+                    - generic [ref=e509]: "+35"
+                    - generic [ref=e510]: "-14"
+                    - generic [ref=e511]: 15 arquivo(s)
+                  - generic [ref=e512]:
+                    - code [ref=e513]: feature/mock-1223
+                    - generic [ref=e514]: →
+                    - code [ref=e515]: main
+              - listitem [ref=e516]:
+                - 'button "#1225 open feat(mock): fluxo 1225 @bob-dev in 1 minute +41 -8 11 arquivo(s) feature/mock-1225 main" [ref=e517]':
+                  - generic [ref=e518]:
+                    - strong [ref=e519]: "#1225"
+                    - generic [ref=e520]: open
+                  - generic [ref=e521]:
+                    - img [ref=e522]
+                    - generic [ref=e526]: "feat(mock): fluxo 1225"
+                  - generic [ref=e527]:
+                    - generic [ref=e528]: "@bob-dev"
+                    - generic [ref=e529]: in 1 minute
+                  - generic [ref=e530]:
+                    - generic [ref=e531]: "+41"
+                    - generic [ref=e532]: "-8"
+                    - generic [ref=e533]: 11 arquivo(s)
+                  - generic [ref=e534]:
+                    - code [ref=e535]: feature/mock-1225
+                    - generic [ref=e536]: →
+                    - code [ref=e537]: main
+              - listitem [ref=e538]:
+                - 'button "#1226 open feat(mock): fluxo 1226 @alice-dev in 1 minute +44 -10 12 arquivo(s) feature/mock-1226 main" [ref=e539]':
+                  - generic [ref=e540]:
+                    - strong [ref=e541]: "#1226"
+                    - generic [ref=e542]: open
+                  - generic [ref=e543]:
+                    - img [ref=e544]
+                    - generic [ref=e548]: "feat(mock): fluxo 1226"
+                  - generic [ref=e549]:
+                    - generic [ref=e550]: "@alice-dev"
+                    - generic [ref=e551]: in 1 minute
+                  - generic [ref=e552]:
+                    - generic [ref=e553]: "+44"
+                    - generic [ref=e554]: "-10"
+                    - generic [ref=e555]: 12 arquivo(s)
+                  - generic [ref=e556]:
+                    - code [ref=e557]: feature/mock-1226
+                    - generic [ref=e558]: →
+                    - code [ref=e559]: main
+              - listitem [ref=e560]:
+                - 'button "#1227 open feat(mock): fluxo 1227 @bob-dev in 1 minute +20 -12 13 arquivo(s) feature/mock-1227 main" [ref=e561]':
+                  - generic [ref=e562]:
+                    - strong [ref=e563]: "#1227"
+                    - generic [ref=e564]: open
+                  - generic [ref=e565]:
+                    - img [ref=e566]
+                    - generic [ref=e570]: "feat(mock): fluxo 1227"
+                  - generic [ref=e571]:
+                    - generic [ref=e572]: "@bob-dev"
+                    - generic [ref=e573]: in 1 minute
+                  - generic [ref=e574]:
+                    - generic [ref=e575]: "+20"
+                    - generic [ref=e576]: "-12"
+                    - generic [ref=e577]: 13 arquivo(s)
+                  - generic [ref=e578]:
+                    - code [ref=e579]: feature/mock-1227
+                    - generic [ref=e580]: →
+                    - code [ref=e581]: main
+            - generic [ref=e582]:
+              - button "Anterior" [disabled]
+              - generic [ref=e583]: Página 1
+              - button "Próxima" [disabled]
+          - region "Detalhe da Pull Request" [ref=e584]:
+            - generic [ref=e585]:
+              - heading "Pull Request" [level=2] [ref=e586]
+              - generic [ref=e587]:
+                - button "Editar" [ref=e588] [cursor=pointer]
+                - button "Atualizar" [ref=e589] [cursor=pointer]:
+                  - img [ref=e590]
+                  - text: Atualizar
+            - generic [ref=e595]:
+              - article [ref=e596]:
+                - generic [ref=e597]:
+                  - generic [ref=e598]:
+                    - paragraph [ref=e599]: Pull Request
+                    - 'heading "feat(mock): fluxo 1201" [level=3] [ref=e600]'
+                  - generic [ref=e602]: open
+                - paragraph [ref=e603]: "#1201"
+                - generic [ref=e604]:
+                  - generic [ref=e605]: B
+                  - generic [ref=e606]:
+                    - paragraph [ref=e607]: "Autor: @bob-dev"
+                    - paragraph [ref=e608]: Atualizado in 1 minute
+                - paragraph [ref=e609]:
+                  - code [ref=e610]: feature/mock-1201
+                  - generic [ref=e611]: →
+                  - code [ref=e612]: main
+                - paragraph [ref=e613]: "Maintainer pode modificar: Sim"
+                - generic [ref=e614]:
+                  - generic [ref=e615]: "+23"
+                  - generic [ref=e616]: "-10"
+                  - generic [ref=e617]: 11 arquivos
+                - generic [ref=e619]: frontend
+                - generic [ref=e620]:
+                  - heading "Descrição" [level=4] [ref=e621]
+                  - paragraph [ref=e622]: "Mock PR #1201 para validar budgets da aba PRs."
+                - generic [ref=e623]:
+                  - heading "Commits" [level=4] [ref=e624]
+                  - generic [ref=e625]:
+                    - 'button "12010aa mock(pr:1201): ajuste 1" [ref=e626]':
+                      - generic [ref=e627]: 12010aa
+                      - generic [ref=e628]: "mock(pr:1201): ajuste 1"
+                    - 'button "12011aa mock(pr:1201): ajuste 2" [ref=e629]':
+                      - generic [ref=e630]: 12011aa
+                      - generic [ref=e631]: "mock(pr:1201): ajuste 2"
+                    - 'button "12012aa mock(pr:1201): ajuste 3" [ref=e632]':
+                      - generic [ref=e633]: 12012aa
+                      - generic [ref=e634]: "mock(pr:1201): ajuste 3"
+                    - 'button "12013aa mock(pr:1201): ajuste 4" [ref=e635]':
+                      - generic [ref=e636]: 12013aa
+                      - generic [ref=e637]: "mock(pr:1201): ajuste 4"
+                    - 'button "12014aa mock(pr:1201): ajuste 5" [ref=e638]':
+                      - generic [ref=e639]: 12014aa
+                      - generic [ref=e640]: "mock(pr:1201): ajuste 5"
+                    - 'button "12015aa mock(pr:1201): ajuste 6" [ref=e641]':
+                      - generic [ref=e642]: 12015aa
+                      - generic [ref=e643]: "mock(pr:1201): ajuste 6"
+                    - 'button "12016aa mock(pr:1201): ajuste 7" [ref=e644]':
+                      - generic [ref=e645]: 12016aa
+                      - generic [ref=e646]: "mock(pr:1201): ajuste 7"
+                    - 'button "12017aa mock(pr:1201): ajuste 8" [ref=e647]':
+                      - generic [ref=e648]: 12017aa
+                      - generic [ref=e649]: "mock(pr:1201): ajuste 8"
+                    - 'button "12018aa mock(pr:1201): ajuste 9" [ref=e650]':
+                      - generic [ref=e651]: 12018aa
+                      - generic [ref=e652]: "mock(pr:1201): ajuste 9"
+                    - 'button "12019aa mock(pr:1201): ajuste 10" [ref=e653]':
+                      - generic [ref=e654]: 12019aa
+                      - generic [ref=e655]: "mock(pr:1201): ajuste 10"
+                - generic [ref=e656]:
+                  - heading "Files Changed" [level=4] [ref=e657]
+                  - generic [ref=e658]:
+                    - generic [ref=e659]:
+                      - generic [ref=e660]: src/mock/file-1201-0.ts
+                      - generic [ref=e661]: +4 / -1
+                    - generic [ref=e662]:
+                      - generic [ref=e663]: src/mock/file-1201-1.ts
+                      - generic [ref=e664]: +5 / -2
+                    - generic [ref=e665]:
+                      - generic [ref=e666]: src/mock/file-1201-2.ts
+                      - generic [ref=e667]: +6 / -3
+                    - generic [ref=e668]:
+                      - generic [ref=e669]: src/mock/file-1201-3.ts
+                      - generic [ref=e670]: +7 / -4
+                    - generic [ref=e671]:
+                      - generic [ref=e672]: src/mock/file-1201-4.ts
+                      - generic [ref=e673]: +8 / -1
+                    - generic [ref=e674]:
+                      - generic [ref=e675]: src/mock/file-1201-5.ts
+                      - generic [ref=e676]: +9 / -2
+                    - generic [ref=e677]:
+                      - generic [ref=e678]: src/mock/file-1201-6.ts
+                      - generic [ref=e679]: +10 / -3
+                    - generic [ref=e680]:
+                      - generic [ref=e681]: src/mock/file-1201-7.ts
+                      - generic [ref=e682]: +4 / -4
+                    - generic [ref=e683]:
+                      - generic [ref=e684]: src/mock/file-1201-8.ts
+                      - generic [ref=e685]: +5 / -1
+                    - generic [ref=e686]:
+                      - generic [ref=e687]: src/mock/file-1201-9.ts
+                      - generic [ref=e688]: +6 / -2
+              - region "Arquivos, commits e diff completo" [ref=e689]:
+                - navigation "Seções de Pull Request" [ref=e690]:
+                  - button "Arquivos" [ref=e691]
+                  - button "Commits" [ref=e692]
+                  - button "Diff completo" [ref=e693]
+                - generic [ref=e694]:
+                  - generic [ref=e695]:
+                    - generic [ref=e696]: 25 arquivos carregados
+                    - generic [ref=e697]: 2 truncado(s)
+                    - generic [ref=e698]: há mais arquivos no GitHub
+                  - article [ref=e699]:
+                    - generic [ref=e700]:
+                      - strong [ref=e701]: src/mock/file-1201-0.ts
+                      - generic [ref=e702]: renamed
+                    - paragraph [ref=e703]: +4 / -1 (5 mudanças)
+                    - paragraph [ref=e704]: "Renamed from: src/mock/legacy-1201-0.ts"
+                    - generic [ref=e705]:
+                      - button "Exibir patch" [ref=e706] [cursor=pointer]
+                      - generic [ref=e707]: 189 B
+                  - article [ref=e708]:
+                    - generic [ref=e709]:
+                      - strong [ref=e710]: src/mock/file-1201-1.ts
+                      - generic [ref=e711]: modified
+                    - paragraph [ref=e712]: +5 / -2 (6 mudanças)
+                    - generic [ref=e713]:
+                      - button "Exibir patch" [ref=e714] [cursor=pointer]
+                      - generic [ref=e715]: 189 B
+                  - article [ref=e716]:
+                    - generic [ref=e717]:
+                      - strong [ref=e718]: src/mock/file-1201-2.ts
+                      - generic [ref=e719]: modified
+                    - paragraph [ref=e720]: +6 / -3 (7 mudanças)
+                    - generic [ref=e721]:
+                      - button "Exibir patch" [ref=e722] [cursor=pointer]
+                      - generic [ref=e723]: 189 B
+                  - article [ref=e724]:
+                    - generic [ref=e725]:
+                      - strong [ref=e726]: src/mock/file-1201-3.ts
+                      - generic [ref=e727]: modified
+                    - paragraph [ref=e728]: +7 / -4 (8 mudanças)
+                    - generic [ref=e729]:
+                      - button "Exibir patch" [ref=e730] [cursor=pointer]
+                      - generic [ref=e731]: 189 B
+                  - article [ref=e732]:
+                    - generic [ref=e733]:
+                      - strong [ref=e734]: src/mock/file-1201-4.ts
+                      - generic [ref=e735]: modified
+                    - paragraph [ref=e736]: +8 / -1 (9 mudanças)
+                    - generic [ref=e737]:
+                      - button "Exibir patch" [ref=e738] [cursor=pointer]
+                      - generic [ref=e739]: 189 B
+                  - article [ref=e740]:
+                    - generic [ref=e741]:
+                      - strong [ref=e742]: src/mock/file-1201-5.ts
+                      - generic [ref=e743]: modified
+                    - paragraph [ref=e744]: +9 / -2 (10 mudanças)
+                    - generic [ref=e745]:
+                      - button "Exibir patch" [ref=e746] [cursor=pointer]
+                      - generic [ref=e747]: 189 B
+                  - article [ref=e748]:
+                    - generic [ref=e749]:
+                      - strong [ref=e750]: src/mock/file-1201-6.ts
+                      - generic [ref=e751]: modified
+                    - paragraph [ref=e752]: +10 / -3 (11 mudanças)
+                    - generic [ref=e753]:
+                      - button "Exibir patch" [ref=e754] [cursor=pointer]
+                      - generic [ref=e755]: 189 B
+                  - article [ref=e756]:
+                    - generic [ref=e757]:
+                      - strong [ref=e758]: src/mock/file-1201-7.ts
+                      - generic [ref=e759]: modified
+                    - paragraph [ref=e760]: +4 / -4 (12 mudanças)
+                    - generic [ref=e761]:
+                      - button "Exibir patch" [ref=e762] [cursor=pointer]
+                      - generic [ref=e763]: 193 B
+                  - article [ref=e764]:
+                    - generic [ref=e765]:
+                      - strong [ref=e766]: src/mock/file-1201-8.ts
+                      - generic [ref=e767]: modified
+                    - paragraph [ref=e768]: +5 / -1 (5 mudanças)
+                    - paragraph [ref=e769]: "Renamed from: src/mock/legacy-1201-8.ts"
+                    - generic [ref=e770]:
+                      - button "Exibir patch" [ref=e771] [cursor=pointer]
+                      - generic [ref=e772]: 189 B
+                  - article [ref=e773]:
+                    - generic [ref=e774]:
+                      - strong [ref=e775]: src/mock/file-1201-9.ts
+                      - generic [ref=e776]: renamed
+                    - paragraph [ref=e777]: +6 / -2 (6 mudanças)
+                    - generic [ref=e778]:
+                      - button "Exibir patch" [ref=e779] [cursor=pointer]
+                      - generic [ref=e780]: 189 B
+                  - article [ref=e781]:
+                    - generic [ref=e782]:
+                      - strong [ref=e783]: src/mock/file-1201-10.ts
+                      - generic [ref=e784]: modified
+                    - paragraph [ref=e785]: +7 / -3 (7 mudanças)
+                    - generic [ref=e786]:
+                      - button "Exibir patch" [ref=e787] [cursor=pointer]
+                      - generic [ref=e788]: 189 B
+                  - article [ref=e789]:
+                    - generic [ref=e790]:
+                      - strong [ref=e791]: src/mock/file-1201-11.ts
+                      - generic [ref=e792]: modified
+                    - paragraph [ref=e793]: +8 / -4 (8 mudanças)
+                    - generic [ref=e794]:
+                      - button "Exibir patch" [ref=e795] [cursor=pointer]
+                      - generic [ref=e796]: 189 B
+                  - article [ref=e797]:
+                    - generic [ref=e798]:
+                      - strong [ref=e799]: src/mock/file-1201-12.ts
+                      - generic [ref=e800]: modified
+                    - paragraph [ref=e801]: +9 / -1 (9 mudanças)
+                    - generic [ref=e802]:
+                      - button "Exibir patch" [ref=e803] [cursor=pointer]
+                      - generic [ref=e804]: 189 B
+                  - article [ref=e805]:
+                    - generic [ref=e806]:
+                      - strong [ref=e807]: src/mock/file-1201-13.ts
+                      - generic [ref=e808]: modified
+                    - paragraph [ref=e809]: +10 / -2 (10 mudanças)
+                    - generic [ref=e810]:
+                      - button "Exibir patch" [ref=e811] [cursor=pointer]
+                      - generic [ref=e812]: 189 B
+                  - article [ref=e813]:
+                    - generic [ref=e814]:
+                      - strong [ref=e815]: src/mock/file-1201-14.ts
+                      - generic [ref=e816]: modified
+                    - paragraph [ref=e817]: +4 / -3 (11 mudanças)
+                    - generic [ref=e818]:
+                      - button "Exibir patch" [ref=e819] [cursor=pointer]
+                      - generic [ref=e820]: 189 B
+                  - article [ref=e821]:
+                    - generic [ref=e822]:
+                      - strong [ref=e823]: src/mock/file-1201-15.ts
+                      - generic [ref=e824]: modified
+                    - paragraph [ref=e825]: +5 / -4 (12 mudanças)
+                    - generic [ref=e826]:
+                      - button "Exibir patch" [ref=e827] [cursor=pointer]
+                      - generic [ref=e828]: 189 B
+                  - article [ref=e829]:
+                    - generic [ref=e830]:
+                      - strong [ref=e831]: src/mock/file-1201-16.ts
+                      - generic [ref=e832]: modified
+                    - paragraph [ref=e833]: +6 / -1 (5 mudanças)
+                    - paragraph [ref=e834]: "Renamed from: src/mock/legacy-1201-16.ts"
+                    - generic [ref=e835]:
+                      - button "Exibir patch" [ref=e836] [cursor=pointer]
+                      - generic [ref=e837]: 189 B
+                  - article [ref=e838]:
+                    - generic [ref=e839]:
+                      - strong [ref=e840]: src/mock/file-1201-17.ts
+                      - generic [ref=e841]: modified
+                    - paragraph [ref=e842]: +7 / -2 (6 mudanças)
+                    - generic [ref=e843]:
+                      - button "Exibir patch" [ref=e844] [cursor=pointer]
+                      - generic [ref=e845]: 189 B
+                  - article [ref=e846]:
+                    - generic [ref=e847]:
+                      - strong [ref=e848]: src/mock/file-1201-18.ts
+                      - generic [ref=e849]: renamed
+                    - paragraph [ref=e850]: +8 / -3 (7 mudanças)
+                    - generic [ref=e851]:
+                      - button "Exibir patch" [ref=e852] [cursor=pointer]
+                      - generic [ref=e853]: 189 B
+                  - article [ref=e854]:
+                    - generic [ref=e855]:
+                      - strong [ref=e856]: src/mock/file-1201-19.ts
+                      - generic [ref=e857]: modified
+                    - paragraph [ref=e858]: +9 / -4 (8 mudanças)
+                    - generic [ref=e859]:
+                      - button "Exibir patch" [ref=e860] [cursor=pointer]
+                      - generic [ref=e861]: 189 B
+                  - article [ref=e862]:
+                    - generic [ref=e863]:
+                      - strong [ref=e864]: src/mock/file-1201-20.ts
+                      - generic [ref=e865]: modified
+                    - paragraph [ref=e866]: +10 / -1 (9 mudanças)
+                    - generic [ref=e867]:
+                      - button "Exibir patch" [ref=e868] [cursor=pointer]
+                      - generic [ref=e869]: 193 B
+                  - article [ref=e870]:
+                    - generic [ref=e871]:
+                      - strong [ref=e872]: src/mock/file-1201-21.ts
+                      - generic [ref=e873]: modified
+                    - paragraph [ref=e874]: +4 / -2 (10 mudanças)
+                    - generic [ref=e875]:
+                      - button "Exibir patch" [ref=e876] [cursor=pointer]
+                      - generic [ref=e877]: 189 B
+                  - article [ref=e878]:
+                    - generic [ref=e879]:
+                      - strong [ref=e880]: src/mock/file-1201-22.ts
+                      - generic [ref=e881]: modified
+                    - paragraph [ref=e882]: +5 / -3 (11 mudanças)
+                    - generic [ref=e883]:
+                      - button "Exibir patch" [ref=e884] [cursor=pointer]
+                      - generic [ref=e885]: 189 B
+                  - article [ref=e886]:
+                    - generic [ref=e887]:
+                      - strong [ref=e888]: src/mock/file-1201-23.ts
+                      - generic [ref=e889]: modified
+                    - paragraph [ref=e890]: +6 / -4 (12 mudanças)
+                    - generic [ref=e891]:
+                      - button "Exibir patch" [ref=e892] [cursor=pointer]
+                      - generic [ref=e893]: 189 B
+                  - article [ref=e894]:
+                    - generic [ref=e895]:
+                      - strong [ref=e896]: src/mock/file-1201-24.ts
+                      - generic [ref=e897]: modified
+                    - paragraph [ref=e898]: +7 / -1 (5 mudanças)
+                    - paragraph [ref=e899]: "Renamed from: src/mock/legacy-1201-24.ts"
+                    - generic [ref=e900]:
+                      - button "Exibir patch" [ref=e901] [cursor=pointer]
+                      - generic [ref=e902]: 189 B
+                  - button "Carregar mais arquivos do GitHub" [ref=e903] [cursor=pointer]
+```

@@ -23,14 +23,16 @@ const (
 	keychainService = "com.orch.app"
 
 	// Keychain keys
-	keychainAccessToken  = "access_token"
-	keychainRefreshToken = "refresh_token"
-	keychainProvider     = "auth_provider"
-	keychainExpiresAt    = "token_expires_at"
+	keychainAccessToken         = "access_token"
+	keychainRefreshToken        = "refresh_token"
+	keychainProvider            = "auth_provider"
+	keychainExpiresAt           = "token_expires_at"
+	keychainProviderAccessToken = "provider_access_token"
 
 	// Supabase config
 	supabaseURL     = "https://imlkpvutzzbznxqlhqyn.supabase.co"
 	supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltbGtwdnV0enpiem54cWxocXluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzEwOTc3MjUsImV4cCI6MjA4NjY3MzcyNX0.zpIeyaP8zEA4GtypQVSGypACygd0C8KtApgNo73wC2E"
+	githubOAuthScopes = "repo read:user user:email"
 
 	// Local callback server config
 	callbackPort    = 9877
@@ -209,9 +211,12 @@ func (s *Service) GetAuthURL(provider string) (string, error) {
 	params.Add("redirect_to", callbackURL)
 	params.Add("code_challenge", pkce.CodeChallenge)
 	params.Add("code_challenge_method", "S256")
+	if strings.EqualFold(strings.TrimSpace(provider), "github") {
+		params.Add("scopes", githubOAuthScopes)
+	}
 
 	authURL := fmt.Sprintf("%s/auth/v1/authorize?%s", supabaseURL, params.Encode())
-	log.Printf("[AUTH] Auth URL: %s", authURL)
+	log.Printf("[AUTH] Auth URL generated for provider=%s", strings.TrimSpace(provider))
 
 	return authURL, nil
 }
@@ -270,10 +275,6 @@ func (s *Service) exchangeCodeForTokens(code string) (*TokenPair, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("apikey", supabaseAnonKey)
 
-	// Debug log
-	log.Printf("[AUTH] Token exchange request to: %s", supabaseURL+"/auth/v1/token?grant_type=pkce")
-	log.Printf("[AUTH] Request body: %s", string(reqBodyJSON))
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
@@ -282,18 +283,18 @@ func (s *Service) exchangeCodeForTokens(code string) (*TokenPair, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	log.Printf("[AUTH] Token exchange response status: %d", resp.StatusCode)
-	log.Printf("[AUTH] Token exchange response body: %s", string(body))
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("token exchange failed: %s", string(body))
+		return nil, fmt.Errorf("token exchange failed (status=%d): %s", resp.StatusCode, summarizeAuthErrorBody(body))
 	}
 
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-		User         struct {
+		AccessToken   string `json:"access_token"`
+		RefreshToken  string `json:"refresh_token"`
+		ProviderToken string `json:"provider_token"`
+		ExpiresIn     int    `json:"expires_in"`
+		TokenType     string `json:"token_type"`
+		User          struct {
 			AppMetadata struct {
 				Provider string `json:"provider"`
 			} `json:"app_metadata"`
@@ -305,26 +306,40 @@ func (s *Service) exchangeCodeForTokens(code string) (*TokenPair, error) {
 	}
 
 	return &TokenPair{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
-		Provider:     tokenResp.User.AppMetadata.Provider,
+		AccessToken:         tokenResp.AccessToken,
+		RefreshToken:        tokenResp.RefreshToken,
+		ProviderAccessToken: tokenResp.ProviderToken,
+		ExpiresAt:           time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+		Provider:            tokenResp.User.AppMetadata.Provider,
 	}, nil
 }
 
 // storeTokens armazena tokens no macOS Keychain
 func (s *Service) storeTokens(pair *TokenPair) error {
+	if pair == nil {
+		return fmt.Errorf("token pair is required")
+	}
+
 	if err := keyring.Set(keychainService, keychainAccessToken, pair.AccessToken); err != nil {
 		return fmt.Errorf("failed to store access token: %w", err)
 	}
 	if err := keyring.Set(keychainService, keychainRefreshToken, pair.RefreshToken); err != nil {
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
-	if err := keyring.Set(keychainService, keychainProvider, pair.Provider); err != nil {
+	provider := strings.ToLower(strings.TrimSpace(pair.Provider))
+	if err := keyring.Set(keychainService, keychainProvider, provider); err != nil {
 		return fmt.Errorf("failed to store provider: %w", err)
 	}
 	if err := keyring.Set(keychainService, keychainExpiresAt, pair.ExpiresAt.Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("failed to store expiration: %w", err)
+	}
+	providerAccessToken := strings.TrimSpace(pair.ProviderAccessToken)
+	if provider == "github" && providerAccessToken != "" {
+		if err := keyring.Set(keychainService, keychainProviderAccessToken, providerAccessToken); err != nil {
+			return fmt.Errorf("failed to store provider access token: %w", err)
+		}
+	} else {
+		_ = keyring.Delete(keychainService, keychainProviderAccessToken)
 	}
 	return nil
 }
@@ -337,6 +352,40 @@ func (s *Service) getAccessToken() (string, error) {
 // getRefreshToken retorna o refresh token do Keychain
 func (s *Service) getRefreshToken() (string, error) {
 	return keyring.Get(keychainService, keychainRefreshToken)
+}
+
+// getProviderAccessToken retorna o provider access token OAuth (ex.: GitHub)
+func (s *Service) getProviderAccessToken() (string, error) {
+	return keyring.Get(keychainService, keychainProviderAccessToken)
+}
+
+func (s *Service) getProvider() string {
+	provider, _ := keyring.Get(keychainService, keychainProvider)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "" {
+		return provider
+	}
+
+	if s.currentUser != nil {
+		return strings.ToLower(strings.TrimSpace(s.currentUser.Provider))
+	}
+
+	return ""
+}
+
+func (s *Service) isSessionAccessTokenNearExpiry() bool {
+	expiresStr, err := keyring.Get(keychainService, keychainExpiresAt)
+	if err != nil {
+		return false
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresStr))
+	if err != nil {
+		return false
+	}
+
+	// Usa margem curta para evitar request com token prestes a expirar.
+	return !time.Now().Before(expiresAt.Add(-60 * time.Second))
 }
 
 // IsAuthenticated verifica se o usuário está autenticado com token válido
@@ -393,13 +442,14 @@ func (s *Service) RefreshToken() error {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("refresh failed: %s", string(body))
+		return fmt.Errorf("refresh failed (status=%d): %s", resp.StatusCode, summarizeAuthErrorBody(body))
 	}
 
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
+		AccessToken   string `json:"access_token"`
+		RefreshToken  string `json:"refresh_token"`
+		ProviderToken string `json:"provider_token"`
+		ExpiresIn     int    `json:"expires_in"`
 	}
 
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
@@ -408,12 +458,18 @@ func (s *Service) RefreshToken() error {
 
 	// Buscar provider atual
 	provider, _ := keyring.Get(keychainService, keychainProvider)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	providerAccessToken, _ := s.getProviderAccessToken()
+	if next := strings.TrimSpace(tokenResp.ProviderToken); next != "" {
+		providerAccessToken = next
+	}
 
 	return s.storeTokens(&TokenPair{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
-		Provider:     provider,
+		AccessToken:         tokenResp.AccessToken,
+		RefreshToken:        tokenResp.RefreshToken,
+		ProviderAccessToken: providerAccessToken,
+		ExpiresAt:           time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+		Provider:            provider,
 	})
 }
 
@@ -459,7 +515,7 @@ func (s *Service) fetchUserProfile(accessToken string) (*User, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("user profile fetch failed: %s", string(body))
+		return nil, fmt.Errorf("user profile fetch failed (status=%d): %s", resp.StatusCode, summarizeAuthErrorBody(body))
 	}
 
 	var userResp struct {
@@ -500,15 +556,63 @@ func (s *Service) fetchUserProfile(accessToken string) (*User, error) {
 }
 
 // GetGitHubToken retorna o token do GitHub para chamadas API
-// O Supabase OAuth retorna o provider_token nos metadados
+// O Supabase OAuth retorna provider_token, que e o token valido para api.github.com.
 func (s *Service) GetGitHubToken() (string, error) {
-	provider, _ := keyring.Get(keychainService, keychainProvider)
-	if provider != "github" {
+	if s.getProvider() != "github" {
 		return "", fmt.Errorf("not authenticated with GitHub")
 	}
-	// O access token do Supabase com provider GitHub já contém permissões
-	// Para acessar GitHub API, usamos o provider_token armazenado
-	return s.getAccessToken()
+
+	providerAccessToken, err := s.getProviderAccessToken()
+	cachedProviderToken := strings.TrimSpace(providerAccessToken)
+	shouldRefresh := cachedProviderToken == "" || s.isSessionAccessTokenNearExpiry()
+
+	if shouldRefresh {
+		if refreshErr := s.RefreshToken(); refreshErr == nil {
+			refreshedProviderToken, refreshedErr := s.getProviderAccessToken()
+			if refreshedErr == nil && strings.TrimSpace(refreshedProviderToken) != "" {
+				return strings.TrimSpace(refreshedProviderToken), nil
+			}
+		} else if cachedProviderToken != "" {
+			log.Printf("[AUTH] warning: failed to refresh GitHub token, using cached provider token: %v", refreshErr)
+			return cachedProviderToken, nil
+		}
+	}
+
+	if err == nil && cachedProviderToken != "" {
+		return cachedProviderToken, nil
+	}
+
+	return "", fmt.Errorf("missing GitHub provider token; reconnect GitHub account")
+}
+
+func summarizeAuthErrorBody(rawBody []byte) string {
+	const fallback = "authentication provider returned an error"
+
+	trimmedBody := bytes.TrimSpace(rawBody)
+	if len(trimmedBody) == 0 {
+		return fallback
+	}
+
+	var payload struct {
+		Message          string `json:"message"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(trimmedBody, &payload); err != nil {
+		return fallback
+	}
+
+	if value := strings.TrimSpace(payload.ErrorDescription); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(payload.Message); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(payload.Error); value != "" {
+		return value
+	}
+
+	return fallback
 }
 
 // Logout limpa todos os tokens e dados de auth
@@ -516,7 +620,13 @@ func (s *Service) Logout() error {
 	s.currentUser = nil
 	s.StopCallbackServer()
 
-	keys := []string{keychainAccessToken, keychainRefreshToken, keychainProvider, keychainExpiresAt}
+	keys := []string{
+		keychainAccessToken,
+		keychainRefreshToken,
+		keychainProvider,
+		keychainExpiresAt,
+		keychainProviderAccessToken,
+	}
 	for _, key := range keys {
 		if err := keyring.Delete(keychainService, key); err != nil {
 			log.Printf("[AUTH] Warning: failed to delete keychain key %s: %v", key, err)
@@ -537,7 +647,11 @@ func (s *Service) GetAuthState() *AuthState {
 		if user, err := s.GetCurrentUser(); err == nil {
 			state.User = user
 			state.Provider = user.Provider
-			state.HasGitHubToken = user.Provider == "github"
+			if strings.EqualFold(strings.TrimSpace(user.Provider), "github") {
+				if providerAccessToken, tokenErr := s.getProviderAccessToken(); tokenErr == nil && strings.TrimSpace(providerAccessToken) != "" {
+					state.HasGitHubToken = true
+				}
+			}
 		}
 	}
 

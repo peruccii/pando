@@ -242,8 +242,12 @@ func (s *Service) GetStatus(repoPath string) (StatusDTO, error) {
 	}
 
 	status := parsePorcelainStatus(out)
-	if status.Branch == "" {
-		status.Branch = preflight.Branch
+	canonicalBranch := strings.TrimSpace(preflight.Branch)
+	if canonicalBranch != "" && !strings.EqualFold(canonicalBranch, "HEAD") {
+		// Preserve branch casing from the canonical rev-parse result.
+		status.Branch = canonicalBranch
+	} else if strings.TrimSpace(status.Branch) == "" {
+		status.Branch = canonicalBranch
 	}
 	s.setCachedStatus(preflight.RepoRoot, status)
 	return status, nil
@@ -338,6 +342,162 @@ func (s *Service) GetHistory(repoPath string, cursor string, limit int, search s
 	}
 	s.setCachedHistory(cacheKey, page)
 	return page, nil
+}
+
+func (s *Service) GetCommitDetails(repoPath string, commitHash string) (CommitDetailsDTO, error) {
+	preflight, err := s.Preflight(repoPath)
+	if err != nil {
+		return CommitDetailsDTO{}, err
+	}
+
+	if strings.TrimSpace(commitHash) == "" {
+		return CommitDetailsDTO{}, NewBindingError(CodeInvalidCursor, "Hash do commit obrigatório.", "")
+	}
+
+	// git show --name-status --pretty=format: <hash>
+	out, errOut, exitCode, runErr := s.runGit(context.Background(), defaultReadTimeout, "", "-C", preflight.RepoRoot, "show", "--name-status", "--pretty=format:", commitHash)
+	if runErr != nil {
+		return CommitDetailsDTO{}, NewBindingError(
+			CodeCommandFailed,
+			"Falha ao obter detalhes do commit.",
+			formatCommandFailureDetails(errOut, exitCode, runErr),
+		)
+	}
+
+	files := parseCommitFiles(out)
+	return CommitDetailsDTO{
+		Hash:  commitHash,
+		Files: files,
+	}, nil
+}
+
+func (s *Service) GetCommitDiff(repoPath string, filePath string, commitHash string, contextLines int) (DiffDTO, error) {
+	preflight, err := s.Preflight(repoPath)
+	if err != nil {
+		return DiffDTO{}, err
+	}
+
+	if strings.TrimSpace(commitHash) == "" {
+		return DiffDTO{}, NewBindingError(CodeInvalidCursor, "Hash do commit obrigatório.", "")
+	}
+
+	if contextLines <= 0 {
+		contextLines = 3
+	}
+	if contextLines > 120 {
+		contextLines = 120
+	}
+
+	args := []string{
+		"-C", preflight.RepoRoot,
+		"show",
+		"--format=",
+		fmt.Sprintf("--unified=%d", contextLines),
+		commitHash,
+	}
+
+	cleanFilePath := ""
+	if strings.TrimSpace(filePath) != "" {
+		pathWithinRepo, pathErr := ensurePathWithinRepo(preflight.RepoRoot, filePath)
+		if pathErr != nil {
+			return DiffDTO{}, pathErr
+		}
+		cleanFilePath = pathWithinRepo
+		args = append(args, "--", cleanFilePath)
+	}
+
+	cacheKey := buildCommitDiffCacheKey(preflight.RepoRoot, cleanFilePath, commitHash, contextLines)
+	if cached, ok := s.getCachedDiff(cacheKey); ok {
+		return cached, nil
+	}
+
+	if cleanFilePath != "" {
+		// Note: checking size in a commit is harder without 'git cat-file -s <hash>:<path>'
+		// For now we skip size check for commit diffs or implement it later.
+		// Usually commit diffs are smaller than full files anyway.
+	}
+
+	out, errOut, exitCode, runErr := s.runGit(context.Background(), defaultReadTimeout, "", args...)
+	if runErr != nil {
+		if isTimeoutBindingError(runErr) {
+			degraded := buildTimeoutDiffFallback("unified", cleanFilePath)
+			s.setCachedDiff(cacheKey, degraded)
+			return degraded, nil
+		}
+		return DiffDTO{}, NewBindingError(
+			CodeCommandFailed,
+			"Falha ao obter diff do commit.",
+			formatCommandFailureDetails(errOut, exitCode, runErr),
+		)
+	}
+
+	files := parseDiffFiles(out)
+	isBinary := strings.Contains(out, "Binary files ") || strings.Contains(out, "GIT binary patch")
+	if !isBinary {
+		for _, file := range files {
+			if file.IsBinary {
+				isBinary = true
+				break
+			}
+		}
+	}
+
+	isTruncated := false
+	raw := out
+	if len(out) > maxDiffBytes {
+		raw = out[:maxDiffBytes] + "\n\n... (diff truncado para manter responsividade)"
+		isTruncated = true
+	}
+
+	result := DiffDTO{
+		Mode:        "unified",
+		FilePath:    cleanFilePath,
+		Raw:         raw,
+		Files:       files,
+		IsBinary:    isBinary,
+		IsTruncated: isTruncated,
+	}
+	s.setCachedDiff(cacheKey, result)
+	return result, nil
+}
+
+func parseCommitFiles(raw string) []CommitFileDTO {
+	lines := strings.Split(raw, "\n")
+	files := make([]CommitFileDTO, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+
+		status := strings.TrimSpace(parts[0])
+		path := strings.TrimSpace(parts[1])
+
+		// R100\told\tnew
+		if len(parts) >= 3 {
+			path = strings.TrimSpace(parts[2])
+		}
+
+		files = append(files, CommitFileDTO{
+			Path:   path,
+			Status: status,
+		})
+	}
+	return files
+}
+
+func buildCommitDiffCacheKey(repoRoot string, filePath string, commitHash string, contextLines int) string {
+	return strings.Join([]string{
+		filepath.Clean(strings.TrimSpace(repoRoot)),
+		strings.TrimSpace(filePath),
+		"commit:" + strings.ToLower(strings.TrimSpace(commitHash)),
+		strconv.Itoa(contextLines),
+	}, "\x1f")
 }
 
 func (s *Service) GetDiff(repoPath string, filePath string, mode string, contextLines int) (DiffDTO, error) {

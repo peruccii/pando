@@ -3,10 +3,14 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,18 +19,39 @@ import (
 
 const (
 	githubGraphQLEndpoint = "https://api.github.com/graphql"
+	githubRESTEndpoint    = "https://api.github.com"
+	githubRESTAPIVersion  = "2022-11-28"
+	githubRESTAcceptJSON  = "application/vnd.github+json"
+	githubRESTAcceptDiff  = "application/vnd.github.diff"
 	defaultCacheTTL       = 30 * time.Second
+
+	restReadRetryMaxAttempts = 3
+	restReadRetryBaseDelay   = 250 * time.Millisecond
+	restReadRetryMaxBackoff  = 2 * time.Second
+	restReadRetryMaxWait     = 5 * time.Second
 )
 
-const resolveCommitAuthorsBatchSize = 20
+const (
+	resolveCommitAuthorsBatchSize = 20
+	defaultRESTPage               = 1
+	defaultRESTPerPage            = 30
+	maxRESTPerPage                = 100
+	maxPRFilePatchBytes           = 128 * 1024
+	maxLabelNameLength            = 50
+	maxLabelDescriptionLength     = 100
+)
 
 // Service implementa IGitHubService
 type Service struct {
-	token     func() (string, error) // Função que retorna o token GitHub
-	client    *http.Client
-	cache     *Cache
-	rateLeft  int // Rate limit remaining
-	rateReset time.Time
+	token        func() (string, error) // Função que retorna o token GitHub
+	client       *http.Client
+	cache        *Cache
+	restEndpoint string
+	telemetry    func(eventName string, payload interface{})
+	rateLeft     int // Rate limit remaining
+	rateReset    time.Time
+	retrySleep   func(time.Duration)
+	retryRand    func() float64
 }
 
 // NewService cria um novo serviço GitHub
@@ -37,8 +62,11 @@ func NewService(tokenFn func() (string, error)) *Service {
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		cache:    NewCache(defaultCacheTTL),
-		rateLeft: 5000,
+		cache:        NewCache(defaultCacheTTL),
+		restEndpoint: githubRESTEndpoint,
+		rateLeft:     5000,
+		retrySleep:   time.Sleep,
+		retryRand:    rand.Float64,
 	}
 }
 
@@ -120,6 +148,307 @@ func (s *Service) executeQuery(query string, variables map[string]interface{}) (
 	return gqlResp.Data, nil
 }
 
+// executeRESTRequest executa chamadas REST para GitHub com headers oficiais de PR API.
+func (s *Service) executeRESTRequest(method, endpointPath string, queryValues url.Values, acceptHeader string, body io.Reader) ([]byte, http.Header, error) {
+	respBody, headers, statusCode, err := s.executeRESTRequestConditional(method, endpointPath, queryValues, acceptHeader, body, "")
+	if err != nil {
+		return nil, headers, err
+	}
+	if statusCode == http.StatusNotModified {
+		return nil, headers, &GitHubError{
+			StatusCode: http.StatusNotModified,
+			Message:    "Not modified response without conditional request",
+			Type:       "unknown",
+		}
+	}
+	return respBody, headers, nil
+}
+
+// executeRESTRequestConditional executa request REST opcionalmente condicional via If-None-Match.
+func (s *Service) executeRESTRequestConditional(
+	method,
+	endpointPath string,
+	queryValues url.Values,
+	acceptHeader string,
+	body io.Reader,
+	ifNoneMatch string,
+) ([]byte, http.Header, int, error) {
+	token, err := s.token()
+	if err != nil {
+		return nil, nil, 0, &GitHubError{StatusCode: 401, Message: "Not authenticated with GitHub", Type: "auth"}
+	}
+
+	normalizedPath := strings.TrimSpace(endpointPath)
+	if normalizedPath == "" {
+		return nil, nil, 0, fmt.Errorf("empty REST endpoint path")
+	}
+	if !strings.HasPrefix(normalizedPath, "/") {
+		normalizedPath = "/" + normalizedPath
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(s.restEndpoint), "/")
+	if baseURL == "" {
+		baseURL = githubRESTEndpoint
+	}
+
+	requestURL, err := url.Parse(baseURL + normalizedPath)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to build REST request URL: %w", err)
+	}
+	if len(queryValues) > 0 {
+		requestURL.RawQuery = queryValues.Encode()
+	}
+
+	normalizedMethod := strings.ToUpper(strings.TrimSpace(method))
+	if normalizedMethod == "" {
+		normalizedMethod = http.MethodGet
+	}
+
+	normalizedAccept := strings.TrimSpace(acceptHeader)
+	if normalizedAccept == "" {
+		normalizedAccept = githubRESTAcceptJSON
+	}
+
+	maxAttempts := 1
+	if normalizedMethod == http.MethodGet {
+		maxAttempts = restReadRetryMaxAttempts
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequest(normalizedMethod, requestURL.String(), body)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("failed to create REST request: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", "ORCH-App/1.0")
+		req.Header.Set("X-GitHub-Api-Version", githubRESTAPIVersion)
+		req.Header.Set("Accept", normalizedAccept)
+		if normalizedIfNoneMatch := strings.TrimSpace(ifNoneMatch); normalizedIfNoneMatch != "" {
+			req.Header.Set("If-None-Match", normalizedIfNoneMatch)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, requestErr := s.client.Do(req)
+		if requestErr != nil {
+			wrapped := &GitHubError{StatusCode: 0, Message: "Network error: " + requestErr.Error(), Type: "network"}
+			if delay, reason, shouldRetry := s.shouldRetryRESTRead(normalizedMethod, attempt, maxAttempts, 0, nil, nil, wrapped); shouldRetry {
+				log.Printf("[GitHub][PR-REST] retrying read request method=%s path=%s attempt=%d/%d reason=%s delay=%s status=%d", normalizedMethod, normalizedPath, attempt+1, maxAttempts, reason, delay, 0)
+				s.sleepRetryDelay(delay)
+				continue
+			}
+			return nil, nil, 0, wrapped
+		}
+
+		s.updateRateLimit(resp.Header)
+
+		if resp.StatusCode == http.StatusNotModified {
+			_ = resp.Body.Close()
+			return nil, resp.Header, resp.StatusCode, nil
+		}
+
+		respBody, readErr := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil && readErr == nil {
+			readErr = closeErr
+		}
+		if readErr != nil {
+			wrappedReadErr := fmt.Errorf("failed to read REST response: %w", readErr)
+			if delay, reason, shouldRetry := s.shouldRetryRESTRead(normalizedMethod, attempt, maxAttempts, resp.StatusCode, resp.Header, nil, wrappedReadErr); shouldRetry {
+				log.Printf("[GitHub][PR-REST] retrying read request method=%s path=%s attempt=%d/%d reason=%s delay=%s status=%d", normalizedMethod, normalizedPath, attempt+1, maxAttempts, reason, delay, resp.StatusCode)
+				s.sleepRetryDelay(delay)
+				continue
+			}
+			return nil, resp.Header, resp.StatusCode, wrappedReadErr
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			httpErr := s.handleRESTHTTPError(normalizedMethod, normalizedPath, resp.StatusCode, resp.Header, respBody)
+			if delay, reason, shouldRetry := s.shouldRetryRESTRead(normalizedMethod, attempt, maxAttempts, resp.StatusCode, resp.Header, respBody, nil); shouldRetry {
+				log.Printf("[GitHub][PR-REST] retrying read request method=%s path=%s attempt=%d/%d reason=%s delay=%s status=%d", normalizedMethod, normalizedPath, attempt+1, maxAttempts, reason, delay, resp.StatusCode)
+				s.sleepRetryDelay(delay)
+				continue
+			}
+			return nil, resp.Header, resp.StatusCode, httpErr
+		}
+
+		return respBody, resp.Header, resp.StatusCode, nil
+	}
+
+	return nil, nil, 0, fmt.Errorf("failed to execute REST request")
+}
+
+func (s *Service) shouldRetryRESTRead(
+	method string,
+	attempt,
+	maxAttempts,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+	requestErr error,
+) (time.Duration, string, bool) {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodGet {
+		return 0, "", false
+	}
+	if attempt >= maxAttempts {
+		return 0, "", false
+	}
+
+	if requestErr != nil {
+		delay, ok := s.computeRESTReadRetryDelay(attempt, headers)
+		if !ok {
+			return 0, "", false
+		}
+		return delay, "read-error", true
+	}
+
+	switch statusCode {
+	case http.StatusTooManyRequests:
+		delay, ok := s.computeRESTReadRetryDelay(attempt, headers)
+		if !ok {
+			return 0, "", false
+		}
+		return delay, "rate-limit-429", true
+	case http.StatusForbidden:
+		if !isSecondaryRateLimitResponse(statusCode, headers, responseBody) {
+			return 0, "", false
+		}
+		delay, ok := s.computeRESTReadRetryDelay(attempt, headers)
+		if !ok {
+			return 0, "", false
+		}
+		return delay, "secondary-rate-limit", true
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		delay, ok := s.computeRESTReadRetryDelay(attempt, headers)
+		if !ok {
+			return 0, "", false
+		}
+		return delay, fmt.Sprintf("http-%d", statusCode), true
+	default:
+		return 0, "", false
+	}
+}
+
+func (s *Service) computeRESTReadRetryDelay(attempt int, headers http.Header) (time.Duration, bool) {
+	if attempt <= 0 {
+		attempt = 1
+	}
+
+	if retryAfter, ok := parseRetryAfterHeader(headers); ok {
+		if retryAfter > restReadRetryMaxWait {
+			return 0, false
+		}
+		return retryAfter + s.jitterDuration(retryAfter/4), true
+	}
+
+	backoff := restReadRetryBaseDelay
+	for i := 1; i < attempt; i++ {
+		backoff *= 2
+		if backoff >= restReadRetryMaxBackoff {
+			backoff = restReadRetryMaxBackoff
+			break
+		}
+	}
+
+	halfBackoff := backoff / 2
+	if halfBackoff <= 0 {
+		return backoff, true
+	}
+	delay := halfBackoff + s.jitterDuration(halfBackoff)
+	if delay > restReadRetryMaxWait {
+		delay = restReadRetryMaxWait
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
+}
+
+func parseRetryAfterHeader(headers http.Header) (time.Duration, bool) {
+	if headers == nil {
+		return 0, false
+	}
+
+	rawRetryAfter := strings.TrimSpace(headers.Get("Retry-After"))
+	if rawRetryAfter == "" {
+		return 0, false
+	}
+
+	if retryAfterSeconds, err := strconv.Atoi(rawRetryAfter); err == nil {
+		if retryAfterSeconds < 0 {
+			retryAfterSeconds = 0
+		}
+		return time.Duration(retryAfterSeconds) * time.Second, true
+	}
+
+	if retryAt, err := http.ParseTime(rawRetryAfter); err == nil {
+		delay := retryAt.Sub(time.Now())
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
+	}
+
+	return 0, false
+}
+
+func isSecondaryRateLimitResponse(statusCode int, headers http.Header, body []byte) bool {
+	if statusCode != http.StatusForbidden {
+		return false
+	}
+
+	normalizedBody := strings.ToLower(strings.TrimSpace(string(body)))
+	if strings.Contains(normalizedBody, "secondary rate limit") {
+		return true
+	}
+	if strings.Contains(normalizedBody, "secondary limit") {
+		return true
+	}
+	if strings.Contains(normalizedBody, "abuse detection") {
+		return true
+	}
+
+	if strings.TrimSpace(headers.Get("Retry-After")) != "" {
+		return strings.Contains(normalizedBody, "rate limit")
+	}
+
+	return false
+}
+
+func (s *Service) jitterDuration(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(s.retryRandomFloat64() * float64(max))
+}
+
+func (s *Service) retryRandomFloat64() float64 {
+	if s == nil || s.retryRand == nil {
+		return rand.Float64()
+	}
+
+	value := s.retryRand()
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+func (s *Service) sleepRetryDelay(delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	if s != nil && s.retrySleep != nil {
+		s.retrySleep(delay)
+		return
+	}
+	time.Sleep(delay)
+}
+
 // updateRateLimit atualiza informações de rate limit dos headers HTTP
 func (s *Service) updateRateLimit(headers http.Header) {
 	if remaining := headers.Get("X-RateLimit-Remaining"); remaining != "" {
@@ -141,13 +470,17 @@ func (s *Service) updateRateLimit(headers http.Header) {
 
 // handleHTTPError converte erro HTTP em GitHubError tipado
 func (s *Service) handleHTTPError(statusCode int, body []byte) *GitHubError {
-	msg := string(body)
+	msg := parseGitHubErrorMessage(body)
+	lowerMessage := strings.ToLower(msg)
 
 	switch statusCode {
 	case 401:
 		return &GitHubError{StatusCode: 401, Message: "GitHub token expired or invalid", Type: "auth"}
 	case 403:
-		if s.rateLeft <= 0 {
+		if s.rateLeft <= 0 || strings.Contains(lowerMessage, "rate limit") || strings.Contains(lowerMessage, "secondary limit") {
+			if msg == "" {
+				msg = "Rate limit exceeded."
+			}
 			return &GitHubError{StatusCode: 403, Message: fmt.Sprintf("Rate limit exceeded. Resets at %s", s.rateReset.Format(time.Kitchen)), Type: "ratelimit"}
 		}
 		return &GitHubError{StatusCode: 403, Message: "Permission denied: " + msg, Type: "permission"}
@@ -155,11 +488,118 @@ func (s *Service) handleHTTPError(statusCode int, body []byte) *GitHubError {
 		return &GitHubError{StatusCode: 404, Message: "Resource not found", Type: "notfound"}
 	case 409:
 		return &GitHubError{StatusCode: 409, Message: "Merge conflict detected", Type: "conflict"}
+	case 422:
+		return &GitHubError{StatusCode: 422, Message: "Validation failed: " + msg, Type: "validation"}
 	case 429:
 		return &GitHubError{StatusCode: 429, Message: "Too many requests", Type: "ratelimit"}
 	default:
 		return &GitHubError{StatusCode: statusCode, Message: fmt.Sprintf("GitHub API error %d: %s", statusCode, msg), Type: "unknown"}
 	}
+}
+
+func (s *Service) handleRESTHTTPError(method, endpointPath string, statusCode int, headers http.Header, body []byte) *GitHubError {
+	githubErr := s.handleHTTPError(statusCode, body)
+	if githubErr == nil {
+		return nil
+	}
+	if statusCode != http.StatusForbidden || strings.TrimSpace(githubErr.Type) != "permission" {
+		return githubErr
+	}
+
+	scopeHint := buildPRPermissionScopeHint(method, endpointPath, headers)
+	if scopeHint == "" {
+		return githubErr
+	}
+
+	if strings.TrimSpace(githubErr.Message) == "" {
+		githubErr.Message = scopeHint
+		return githubErr
+	}
+
+	githubErr.Message = strings.TrimSpace(githubErr.Message) + " | " + scopeHint
+	return githubErr
+}
+
+func parseGitHubErrorMessage(body []byte) string {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return "empty error response"
+	}
+
+	var payload struct {
+		Message string          `json:"message"`
+		Errors  json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return raw
+	}
+
+	message := strings.TrimSpace(payload.Message)
+	if message == "" {
+		return raw
+	}
+
+	errorDetails := strings.TrimSpace(string(payload.Errors))
+	switch errorDetails {
+	case "", "null", "[]", "{}":
+		return message
+	default:
+		return fmt.Sprintf("%s | errors=%s", message, errorDetails)
+	}
+}
+
+func buildPRPermissionScopeHint(method, endpointPath string, headers http.Header) string {
+	required := requiredPRPermissionsForRequest(method, endpointPath)
+	parts := make([]string, 0, 4)
+	if required != "" {
+		parts = append(parts, "required="+required)
+	}
+
+	if headers != nil {
+		if acceptedPermissions := sanitizePermissionHeaderValue(headers.Get("X-Accepted-GitHub-Permissions")); acceptedPermissions != "" {
+			parts = append(parts, "accepted_permissions="+acceptedPermissions)
+		}
+		if tokenScopes := sanitizePermissionHeaderValue(headers.Get("X-OAuth-Scopes")); tokenScopes != "" {
+			parts = append(parts, "token_scopes="+tokenScopes)
+		}
+		if acceptedScopes := sanitizePermissionHeaderValue(headers.Get("X-Accepted-OAuth-Scopes")); acceptedScopes != "" {
+			parts = append(parts, "accepted_scopes="+acceptedScopes)
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("Insufficient token scope for PR operation (%s)", strings.Join(parts, " | "))
+}
+
+func requiredPRPermissionsForRequest(method, endpointPath string) string {
+	normalizedMethod := strings.ToUpper(strings.TrimSpace(method))
+	if normalizedMethod == http.MethodGet {
+		return "pull_requests:read"
+	}
+
+	normalizedPath := strings.ToLower(strings.TrimSpace(endpointPath))
+	if strings.HasSuffix(normalizedPath, "/merge") {
+		return "pull_requests:write,contents:write"
+	}
+
+	return "pull_requests:write"
+}
+
+func sanitizePermissionHeaderValue(value string) string {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return ""
+	}
+
+	normalized = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(normalized)
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	if len(normalized) > 180 {
+		normalized = normalized[:180] + "..."
+	}
+	return normalized
 }
 
 // === Repositories ===
@@ -227,106 +667,6 @@ func (s *Service) ListRepositories() ([]Repository, error) {
 }
 
 // === Pull Requests ===
-
-// ListPullRequests lista PRs de um repositório
-func (s *Service) ListPullRequests(owner, repo string, filters PRFilters) ([]PullRequest, error) {
-	if filters.First == 0 {
-		filters.First = 25
-	}
-
-	// Checar cache (sem filtros complexos)
-	if filters.Author == nil && len(filters.Labels) == 0 && filters.After == nil {
-		if prs, ok := s.cache.GetPRs(owner, repo); ok {
-			return filterPRsByState(prs, filters.State), nil
-		}
-	}
-
-	// Converter estado para GraphQL enum
-	var states []string
-	switch filters.State {
-	case "OPEN":
-		states = []string{"OPEN"}
-	case "CLOSED":
-		states = []string{"CLOSED"}
-	case "MERGED":
-		states = []string{"MERGED"}
-	default:
-		states = nil // Todos
-	}
-
-	vars := map[string]interface{}{
-		"owner": owner,
-		"repo":  repo,
-		"first": filters.First,
-	}
-	if states != nil {
-		vars["states"] = states
-	}
-	if filters.After != nil {
-		vars["after"] = *filters.After
-	}
-
-	data, err := s.executeQuery(QueryListPullRequests, vars)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Repository struct {
-			PullRequests struct {
-				TotalCount int      `json:"totalCount"`
-				Nodes      []prNode `json:"nodes"`
-			} `json:"pullRequests"`
-		} `json:"repository"`
-	}
-
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse pull requests: %w", err)
-	}
-
-	prs := make([]PullRequest, len(result.Repository.PullRequests.Nodes))
-	for i, n := range result.Repository.PullRequests.Nodes {
-		prs[i] = parsePRNode(n)
-	}
-
-	// Cachear se é query sem filtros
-	if filters.Author == nil && len(filters.Labels) == 0 && filters.After == nil {
-		s.cache.SetPRs(owner, repo, prs)
-	}
-
-	log.Printf("[GitHub] Fetched %d PRs from %s/%s", len(prs), owner, repo)
-	return prs, nil
-}
-
-// GetPullRequest busca detalhes de um PR
-func (s *Service) GetPullRequest(owner, repo string, number int) (*PullRequest, error) {
-	if pr, ok := s.cache.GetPR(owner, repo, number); ok {
-		return pr, nil
-	}
-
-	data, err := s.executeQuery(QueryGetPullRequest, map[string]interface{}{
-		"owner":  owner,
-		"repo":   repo,
-		"number": number,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Repository struct {
-			PullRequest prNode `json:"pullRequest"`
-		} `json:"repository"`
-	}
-
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse pull request: %w", err)
-	}
-
-	pr := parsePRNode(result.Repository.PullRequest)
-	s.cache.SetPR(owner, repo, number, &pr)
-	return &pr, nil
-}
 
 // GetPullRequestDiff busca o diff de um PR
 func (s *Service) GetPullRequestDiff(owner, repo string, number int, pagination DiffPagination) (*Diff, error) {
@@ -404,88 +744,816 @@ func (s *Service) GetPullRequestDiff(owner, repo string, number int, pagination 
 	return diff, nil
 }
 
+// GetPullRequestCommits busca commits de um PR via REST com paginação.
+func (s *Service) GetPullRequestCommits(owner, repo string, number int, page, perPage int) (*PRCommitPage, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(owner, repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if number <= 0 {
+		return nil, &GitHubError{StatusCode: 422, Message: "pull request number must be > 0", Type: "validation"}
+	}
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d/commits",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		number,
+	)
+	requestStartedAt := time.Now()
+
+	page, perPage = normalizeRESTPagination(page, perPage)
+	if cached, ok := s.cache.GetPRCommitPage(normalizedOwner, normalizedRepo, number, page, perPage); ok {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusOK, requestStartedAt, "hit")
+		return cached, nil
+	}
+	cacheKey := prCommitsKey(normalizedOwner, normalizedRepo, number, page, perPage)
+	stalePage, hasStale := s.cache.GetPRCommitPageStale(normalizedOwner, normalizedRepo, number, page, perPage)
+	ifNoneMatch := ""
+	if hasStale {
+		if etag, ok := s.cache.GetETag(cacheKey); ok {
+			ifNoneMatch = etag
+		}
+	}
+
+	queryValues := url.Values{}
+	queryValues.Set("page", strconv.Itoa(page))
+	queryValues.Set("per_page", strconv.Itoa(perPage))
+
+	respBody, headers, statusCode, err := s.executeRESTRequestConditional(
+		http.MethodGet,
+		endpointPath,
+		queryValues,
+		githubRESTAcceptJSON,
+		nil,
+		ifNoneMatch,
+	)
+	if err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCodeFromGitHubError(err), requestStartedAt, "miss")
+		return nil, err
+	}
+	if statusCode == http.StatusNotModified {
+		if hasStale {
+			s.cache.Touch(cacheKey)
+			if etag := strings.TrimSpace(headers.Get("ETag")); etag != "" {
+				s.cache.SetETag(cacheKey, etag)
+			}
+			s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "hit")
+			return stalePage, nil
+		}
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "miss")
+		return nil, &GitHubError{
+			StatusCode: http.StatusNotModified,
+			Message:    "received 304 without cached pull request commits",
+			Type:       "unknown",
+		}
+	}
+
+	var payload []struct {
+		SHA     string `json:"sha"`
+		HTMLURL string `json:"html_url"`
+		Commit  struct {
+			Message string `json:"message"`
+			Author  struct {
+				Name  string    `json:"name"`
+				Email string    `json:"email"`
+				Date  time.Time `json:"date"`
+			} `json:"author"`
+			Committer struct {
+				Name  string    `json:"name"`
+				Email string    `json:"email"`
+				Date  time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+		Author *struct {
+			Login     string `json:"login"`
+			AvatarURL string `json:"avatar_url"`
+		} `json:"author"`
+		Committer *struct {
+			Login     string `json:"login"`
+			AvatarURL string `json:"avatar_url"`
+		} `json:"committer"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+		return nil, fmt.Errorf("failed to parse pull request commits: %w", err)
+	}
+
+	items := make([]PRCommit, len(payload))
+	for index, entry := range payload {
+		parentSHAs := make([]string, 0, len(entry.Parents))
+		for _, parent := range entry.Parents {
+			sha := strings.TrimSpace(parent.SHA)
+			if sha != "" {
+				parentSHAs = append(parentSHAs, sha)
+			}
+		}
+
+		commit := PRCommit{
+			SHA:            strings.TrimSpace(entry.SHA),
+			Message:        entry.Commit.Message,
+			HTMLURL:        strings.TrimSpace(entry.HTMLURL),
+			AuthorName:     strings.TrimSpace(entry.Commit.Author.Name),
+			AuthorEmail:    strings.TrimSpace(entry.Commit.Author.Email),
+			AuthoredAt:     entry.Commit.Author.Date,
+			CommitterName:  strings.TrimSpace(entry.Commit.Committer.Name),
+			CommitterEmail: strings.TrimSpace(entry.Commit.Committer.Email),
+			CommittedAt:    entry.Commit.Committer.Date,
+			ParentSHAs:     parentSHAs,
+		}
+
+		if entry.Author != nil {
+			login := strings.TrimSpace(entry.Author.Login)
+			avatar := strings.TrimSpace(entry.Author.AvatarURL)
+			if login != "" || avatar != "" {
+				commit.Author = &User{
+					Login:     login,
+					AvatarURL: avatar,
+				}
+			}
+		}
+		if entry.Committer != nil {
+			login := strings.TrimSpace(entry.Committer.Login)
+			avatar := strings.TrimSpace(entry.Committer.AvatarURL)
+			if login != "" || avatar != "" {
+				commit.Committer = &User{
+					Login:     login,
+					AvatarURL: avatar,
+				}
+			}
+		}
+
+		items[index] = commit
+	}
+
+	nextPage, hasNextPage := parseNextPageFromLinkHeader(headers.Get("Link"))
+
+	result := PRCommitPage{
+		Items:       items,
+		Page:        page,
+		PerPage:     perPage,
+		HasNextPage: hasNextPage,
+		NextPage:    nextPage,
+	}
+	s.cache.SetPRCommitPage(normalizedOwner, normalizedRepo, number, result)
+	s.cache.SetETag(cacheKey, headers.Get("ETag"))
+	s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+	return &result, nil
+}
+
+// GetPullRequestFiles busca arquivos de um PR via REST com paginação.
+func (s *Service) GetPullRequestFiles(owner, repo string, number int, page, perPage int) (*PRFilePage, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(owner, repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if number <= 0 {
+		return nil, &GitHubError{StatusCode: 422, Message: "pull request number must be > 0", Type: "validation"}
+	}
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d/files",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		number,
+	)
+	requestStartedAt := time.Now()
+
+	page, perPage = normalizeRESTPagination(page, perPage)
+	if cached, ok := s.cache.GetPRFilePage(normalizedOwner, normalizedRepo, number, page, perPage); ok {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusOK, requestStartedAt, "hit")
+		return cached, nil
+	}
+	cacheKey := prFilesKey(normalizedOwner, normalizedRepo, number, page, perPage)
+	stalePage, hasStale := s.cache.GetPRFilePageStale(normalizedOwner, normalizedRepo, number, page, perPage)
+	ifNoneMatch := ""
+	if hasStale {
+		if etag, ok := s.cache.GetETag(cacheKey); ok {
+			ifNoneMatch = etag
+		}
+	}
+
+	queryValues := url.Values{}
+	queryValues.Set("page", strconv.Itoa(page))
+	queryValues.Set("per_page", strconv.Itoa(perPage))
+
+	respBody, headers, statusCode, err := s.executeRESTRequestConditional(
+		http.MethodGet,
+		endpointPath,
+		queryValues,
+		githubRESTAcceptJSON,
+		nil,
+		ifNoneMatch,
+	)
+	if err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCodeFromGitHubError(err), requestStartedAt, "miss")
+		return nil, err
+	}
+	if statusCode == http.StatusNotModified {
+		if hasStale {
+			s.cache.Touch(cacheKey)
+			if etag := strings.TrimSpace(headers.Get("ETag")); etag != "" {
+				s.cache.SetETag(cacheKey, etag)
+			}
+			s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "hit")
+			return stalePage, nil
+		}
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "miss")
+		return nil, &GitHubError{
+			StatusCode: http.StatusNotModified,
+			Message:    "received 304 without cached pull request files",
+			Type:       "unknown",
+		}
+	}
+
+	var payload []struct {
+		Filename         string  `json:"filename"`
+		PreviousFilename string  `json:"previous_filename"`
+		Status           string  `json:"status"`
+		Additions        int     `json:"additions"`
+		Deletions        int     `json:"deletions"`
+		Changes          int     `json:"changes"`
+		BlobURL          string  `json:"blob_url"`
+		RawURL           string  `json:"raw_url"`
+		ContentsURL      string  `json:"contents_url"`
+		Patch            *string `json:"patch"`
+	}
+
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+		return nil, fmt.Errorf("failed to parse pull request files: %w", err)
+	}
+
+	items := make([]PRFile, len(payload))
+	for index, entry := range payload {
+		patch := ""
+		hasPatch := false
+		if entry.Patch != nil {
+			patch = *entry.Patch
+			hasPatch = strings.TrimSpace(patch) != ""
+		}
+
+		isBinary := false
+		isPatchTruncated := false
+		patchState := PRFilePatchStateMissing
+
+		if hasPatch {
+			if limitedPatch, limited := truncatePRFilePatch(patch); limited {
+				patch = limitedPatch
+				isPatchTruncated = true
+			}
+
+			if patchLooksBinary(patch) {
+				isBinary = true
+				hasPatch = false
+				patch = ""
+				patchState = PRFilePatchStateBinary
+			} else if patchLooksTruncated(patch) || isPatchTruncated {
+				isPatchTruncated = true
+				patchState = PRFilePatchStateTruncated
+			} else {
+				patchState = PRFilePatchStateAvailable
+			}
+		} else if filenameLooksBinary(entry.Filename) {
+			isBinary = true
+			patchState = PRFilePatchStateBinary
+		}
+
+		items[index] = PRFile{
+			Filename:         strings.TrimSpace(entry.Filename),
+			PreviousFilename: strings.TrimSpace(entry.PreviousFilename),
+			Status:           strings.TrimSpace(strings.ToLower(entry.Status)),
+			Additions:        entry.Additions,
+			Deletions:        entry.Deletions,
+			Changes:          entry.Changes,
+			BlobURL:          strings.TrimSpace(entry.BlobURL),
+			RawURL:           strings.TrimSpace(entry.RawURL),
+			ContentsURL:      strings.TrimSpace(entry.ContentsURL),
+			Patch:            patch,
+			HasPatch:         hasPatch,
+			PatchState:       patchState,
+			IsBinary:         isBinary,
+			IsPatchTruncated: isPatchTruncated,
+		}
+	}
+
+	nextPage, hasNextPage := parseNextPageFromLinkHeader(headers.Get("Link"))
+
+	result := PRFilePage{
+		Items:       items,
+		Page:        page,
+		PerPage:     perPage,
+		HasNextPage: hasNextPage,
+		NextPage:    nextPage,
+	}
+	s.cache.SetPRFilePage(normalizedOwner, normalizedRepo, number, result)
+	s.cache.SetETag(cacheKey, headers.Get("ETag"))
+	s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+	return &result, nil
+}
+
+// GetPullRequestRawDiff busca o diff completo bruto de um PR sob demanda.
+func (s *Service) GetPullRequestRawDiff(owner, repo string, number int) (string, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(owner, repo)
+	if normalizeErr != nil {
+		return "", normalizeErr
+	}
+	if number <= 0 {
+		return "", &GitHubError{StatusCode: 422, Message: "pull request number must be > 0", Type: "validation"}
+	}
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		number,
+	)
+	requestStartedAt := time.Now()
+	if cached, ok := s.cache.GetPRRawDiff(normalizedOwner, normalizedRepo, number); ok {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusOK, requestStartedAt, "hit")
+		return cached, nil
+	}
+	cacheKey := prRawDiffKey(normalizedOwner, normalizedRepo, number)
+	staleDiff, hasStale := s.cache.GetPRRawDiffStale(normalizedOwner, normalizedRepo, number)
+	ifNoneMatch := ""
+	if hasStale {
+		if etag, ok := s.cache.GetETag(cacheKey); ok {
+			ifNoneMatch = etag
+		}
+	}
+
+	respBody, headers, statusCode, err := s.executeRESTRequestConditional(
+		http.MethodGet,
+		endpointPath,
+		nil,
+		githubRESTAcceptDiff,
+		nil,
+		ifNoneMatch,
+	)
+	if err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCodeFromGitHubError(err), requestStartedAt, "miss")
+		return "", err
+	}
+	if statusCode == http.StatusNotModified {
+		if hasStale {
+			s.cache.Touch(cacheKey)
+			if etag := strings.TrimSpace(headers.Get("ETag")); etag != "" {
+				s.cache.SetETag(cacheKey, etag)
+			}
+			s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "hit")
+			return staleDiff, nil
+		}
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "miss")
+		return "", &GitHubError{
+			StatusCode: http.StatusNotModified,
+			Message:    "received 304 without cached pull request raw diff",
+			Type:       "unknown",
+		}
+	}
+
+	rawDiff := string(respBody)
+	s.cache.SetPRRawDiff(normalizedOwner, normalizedRepo, number, rawDiff)
+	s.cache.SetETag(cacheKey, headers.Get("ETag"))
+	s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+	return rawDiff, nil
+}
+
+// GetCommitRawDiff busca o diff bruto de um commit especifico.
+func (s *Service) GetCommitRawDiff(owner, repo, sha string) (string, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(owner, repo)
+	if normalizeErr != nil {
+		return "", normalizeErr
+	}
+	normalizedSHA := strings.TrimSpace(sha)
+	if normalizedSHA == "" {
+		return "", &GitHubError{StatusCode: 422, Message: "commit sha must not be empty", Type: "validation"}
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/commits/%s",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		url.PathEscape(normalizedSHA),
+	)
+	requestStartedAt := time.Now()
+
+	respBody, _, statusCode, err := s.executeRESTRequestConditional(
+		http.MethodGet,
+		endpointPath,
+		nil,
+		githubRESTAcceptDiff,
+		nil,
+		"",
+	)
+	if err != nil {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCodeFromGitHubError(err), requestStartedAt, "miss")
+		return "", err
+	}
+
+	rawDiff := string(respBody)
+	s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+	return rawDiff, nil
+}
+
+// CheckPullRequestMerged verifica se uma PR ja foi mergeada via endpoint REST /merge.
+func (s *Service) CheckPullRequestMerged(owner, repo string, number int) (bool, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(owner, repo)
+	if normalizeErr != nil {
+		return false, normalizeErr
+	}
+	if number <= 0 {
+		return false, &GitHubError{StatusCode: 422, Message: "pull request number must be > 0", Type: "validation"}
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d/merge",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		number,
+	)
+	requestStartedAt := time.Now()
+
+	if cached, ok := s.cache.GetPRMerged(normalizedOwner, normalizedRepo, number); ok {
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusOK, requestStartedAt, "hit")
+		return cached, nil
+	}
+
+	cacheKey := prMergeCheckKey(normalizedOwner, normalizedRepo, number)
+	staleMerged, hasStale := s.cache.GetPRMergedStale(normalizedOwner, normalizedRepo, number)
+	ifNoneMatch := ""
+	if hasStale {
+		if etag, ok := s.cache.GetETag(cacheKey); ok {
+			ifNoneMatch = etag
+		}
+	}
+
+	_, headers, statusCode, err := s.executeRESTRequestConditional(
+		http.MethodGet,
+		endpointPath,
+		nil,
+		githubRESTAcceptJSON,
+		nil,
+		ifNoneMatch,
+	)
+	if err != nil {
+		var githubErr *GitHubError
+		if errors.As(err, &githubErr) && githubErr != nil && githubErr.StatusCode == http.StatusNotFound {
+			s.cache.SetPRMerged(normalizedOwner, normalizedRepo, number, false)
+			s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotFound, requestStartedAt, "miss")
+			return false, nil
+		}
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCodeFromGitHubError(err), requestStartedAt, "miss")
+		return false, err
+	}
+
+	if statusCode == http.StatusNotModified {
+		if hasStale {
+			s.cache.Touch(cacheKey)
+			if etag := strings.TrimSpace(headers.Get("ETag")); etag != "" {
+				s.cache.SetETag(cacheKey, etag)
+			}
+			s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "hit")
+			return staleMerged, nil
+		}
+
+		s.emitPRReadTelemetry(http.MethodGet, endpointPath, http.StatusNotModified, requestStartedAt, "miss")
+		return false, &GitHubError{
+			StatusCode: http.StatusNotModified,
+			Message:    "received 304 without cached pull request merge status",
+			Type:       "unknown",
+		}
+	}
+
+	merged := statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
+	s.cache.SetPRMerged(normalizedOwner, normalizedRepo, number, merged)
+	s.cache.SetETag(cacheKey, headers.Get("ETag"))
+
+	s.emitPRReadTelemetry(http.MethodGet, endpointPath, statusCode, requestStartedAt, "miss")
+	return merged, nil
+}
+
 // CreatePullRequest cria um novo PR
 func (s *Service) CreatePullRequest(input CreatePRInput) (*PullRequest, error) {
-	// Primeiro, buscar o repositoryId
-	repoData, err := s.executeQuery(`query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { id } }`,
-		map[string]interface{}{"owner": input.Owner, "repo": input.Repo})
-	if err != nil {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(input.Owner, input.Repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+
+	normalizedTitle := strings.TrimSpace(input.Title)
+	if normalizedTitle == "" {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "title required",
+			Type:       "validation",
+		}
+	}
+
+	normalizedHead := strings.TrimSpace(input.HeadBranch)
+	if normalizedHead == "" {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "head required",
+			Type:       "validation",
+		}
+	}
+
+	normalizedBase := strings.TrimSpace(input.BaseBranch)
+	if normalizedBase == "" {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "base required",
+			Type:       "validation",
+		}
+	}
+
+	requestPayload := map[string]interface{}{
+		"title": normalizedTitle,
+		"head":  normalizedHead,
+		"base":  normalizedBase,
+	}
+	if normalizedBody := strings.TrimSpace(input.Body); normalizedBody != "" {
+		requestPayload["body"] = input.Body
+	}
+	if input.IsDraft {
+		requestPayload["draft"] = true
+	}
+	if input.MaintainerCanModify != nil {
+		requestPayload["maintainer_can_modify"] = *input.MaintainerCanModify
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+	)
+
+	var payloadResponse restPullRequest
+	if err := s.executePRRESTJSON(prActionCreate, http.MethodPost, endpointPath, nil, requestPayload, &payloadResponse); err != nil {
 		return nil, err
 	}
 
-	var repoResult struct {
-		Repository struct{ ID string } `json:"repository"`
-	}
-	if err := json.Unmarshal(repoData, &repoResult); err != nil {
-		return nil, err
-	}
+	pr := parseRESTPullRequest(payloadResponse)
 
-	data, err := s.executeQuery(MutationCreatePR, map[string]interface{}{
-		"input": map[string]interface{}{
-			"repositoryId": repoResult.Repository.ID,
-			"title":        input.Title,
-			"body":         input.Body,
-			"headRefName":  input.HeadBranch,
-			"baseRefName":  input.BaseBranch,
-			"draft":        input.IsDraft,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		CreatePullRequest struct {
-			PullRequest struct {
-				ID     string `json:"id"`
-				Number int    `json:"number"`
-				Title  string `json:"title"`
-				State  string `json:"state"`
-			} `json:"pullRequest"`
-		} `json:"createPullRequest"`
-	}
-
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	pr := &PullRequest{
-		ID:         result.CreatePullRequest.PullRequest.ID,
-		Number:     result.CreatePullRequest.PullRequest.Number,
-		Title:      result.CreatePullRequest.PullRequest.Title,
-		State:      result.CreatePullRequest.PullRequest.State,
-		HeadBranch: input.HeadBranch,
-		BaseBranch: input.BaseBranch,
-		IsDraft:    input.IsDraft,
-	}
-
-	// Invalidar cache do repo
-	s.cache.Invalidate(input.Owner, input.Repo)
+	s.cache.InvalidatePRLists(normalizedOwner, normalizedRepo)
+	s.cache.SetPR(normalizedOwner, normalizedRepo, pr.Number, &pr)
 
 	log.Printf("[GitHub] Created PR #%d: %s", pr.Number, pr.Title)
-	return pr, nil
+	return &pr, nil
+}
+
+func normalizePRRESTWritableState(rawState string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(rawState))
+	switch normalized {
+	case "open", "closed":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf(`state must be "open" or "closed"`)
+	}
+}
+
+func normalizePRRESTMergeMethod(rawMethod string) (PRMergeMethod, error) {
+	normalized := strings.ToLower(strings.TrimSpace(rawMethod))
+	switch normalized {
+	case "", string(PRMergeMethodMerge):
+		return PRMergeMethodMerge, nil
+	case string(PRMergeMethodSquash):
+		return PRMergeMethodSquash, nil
+	case string(PRMergeMethodRebase):
+		return PRMergeMethodRebase, nil
+	default:
+		return "", fmt.Errorf(`merge method must be "merge", "squash" or "rebase"`)
+	}
+}
+
+func normalizePRRESTOptionalSHA(rawSHA string) (string, error) {
+	normalized := strings.TrimSpace(rawSHA)
+	if normalized == "" {
+		return "", nil
+	}
+	if !fullCommitHashRegex.MatchString(normalized) {
+		return "", fmt.Errorf("sha must be a full 40-character hexadecimal commit hash")
+	}
+	return strings.ToLower(normalized), nil
+}
+
+// UpdatePullRequest atualiza campos de um PR via GitHub REST API v3.
+func (s *Service) UpdatePullRequest(input UpdatePRInput) (*PullRequest, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(input.Owner, input.Repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if input.Number <= 0 {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "pull request number must be > 0",
+			Type:       "validation",
+		}
+	}
+
+	requestPayload := map[string]interface{}{}
+	if input.Title != nil {
+		normalizedTitle := strings.TrimSpace(*input.Title)
+		if normalizedTitle == "" {
+			return nil, &GitHubError{
+				StatusCode: 422,
+				Message:    "title must not be empty when provided",
+				Type:       "validation",
+			}
+		}
+		requestPayload["title"] = normalizedTitle
+	}
+	if input.Body != nil {
+		requestPayload["body"] = *input.Body
+	}
+	if input.State != nil {
+		normalizedState, err := normalizePRRESTWritableState(*input.State)
+		if err != nil {
+			return nil, &GitHubError{
+				StatusCode: 422,
+				Message:    err.Error(),
+				Type:       "validation",
+			}
+		}
+		requestPayload["state"] = normalizedState
+	}
+	if input.BaseBranch != nil {
+		normalizedBase := strings.TrimSpace(*input.BaseBranch)
+		if normalizedBase == "" {
+			return nil, &GitHubError{
+				StatusCode: 422,
+				Message:    "base must not be empty when provided",
+				Type:       "validation",
+			}
+		}
+		requestPayload["base"] = normalizedBase
+	}
+	if input.MaintainerCanModify != nil {
+		requestPayload["maintainer_can_modify"] = *input.MaintainerCanModify
+	}
+	if len(requestPayload) == 0 {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "at least one field must be provided for update",
+			Type:       "validation",
+		}
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		input.Number,
+	)
+
+	var payloadResponse restPullRequest
+	if err := s.executePRRESTJSON(prActionUpdate, http.MethodPatch, endpointPath, nil, requestPayload, &payloadResponse); err != nil {
+		return nil, err
+	}
+
+	pr := parseRESTPullRequest(payloadResponse)
+	s.cache.InvalidatePRMutation(normalizedOwner, normalizedRepo, input.Number)
+	s.cache.SetPR(normalizedOwner, normalizedRepo, pr.Number, &pr)
+
+	log.Printf("[GitHub] Updated PR #%d", pr.Number)
+	return &pr, nil
+}
+
+// MergePullRequestREST executa merge de PR via endpoint REST /pulls/{pull_number}/merge.
+func (s *Service) MergePullRequestREST(input MergePRInput) (*PRMergeResult, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(input.Owner, input.Repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if input.Number <= 0 {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "pull request number must be > 0",
+			Type:       "validation",
+		}
+	}
+
+	normalizedMethod, methodErr := normalizePRRESTMergeMethod(string(input.MergeMethod))
+	if methodErr != nil {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    methodErr.Error(),
+			Type:       "validation",
+		}
+	}
+
+	requestPayload := map[string]interface{}{
+		"merge_method": string(normalizedMethod),
+	}
+
+	if input.SHA != nil {
+		normalizedSHA, shaErr := normalizePRRESTOptionalSHA(*input.SHA)
+		if shaErr != nil {
+			return nil, &GitHubError{
+				StatusCode: 422,
+				Message:    shaErr.Error(),
+				Type:       "validation",
+			}
+		}
+		if normalizedSHA != "" {
+			requestPayload["sha"] = normalizedSHA
+		}
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d/merge",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		input.Number,
+	)
+
+	var payloadResponse struct {
+		SHA     string `json:"sha"`
+		Merged  bool   `json:"merged"`
+		Message string `json:"message"`
+	}
+	if err := s.executePRRESTJSON(prActionMerge, http.MethodPut, endpointPath, nil, requestPayload, &payloadResponse); err != nil {
+		return nil, err
+	}
+
+	result := PRMergeResult{
+		SHA:     strings.TrimSpace(payloadResponse.SHA),
+		Merged:  payloadResponse.Merged,
+		Message: strings.TrimSpace(payloadResponse.Message),
+	}
+	if result.Message == "" {
+		result.Message = "Pull request merge completed."
+	}
+
+	s.cache.Invalidate(normalizedOwner, normalizedRepo)
+	log.Printf("[GitHub] Merged PR #%d (%s)", input.Number, normalizedMethod)
+	return &result, nil
+}
+
+// UpdatePullRequestBranch atualiza branch de PR via endpoint REST /pulls/{pull_number}/update-branch.
+func (s *Service) UpdatePullRequestBranch(input UpdatePRBranchInput) (*PRUpdateBranchResult, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(input.Owner, input.Repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+	if input.Number <= 0 {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    "pull request number must be > 0",
+			Type:       "validation",
+		}
+	}
+
+	requestPayload := map[string]interface{}{}
+	if input.ExpectedHeadSHA != nil {
+		normalizedSHA, shaErr := normalizePRRESTOptionalSHA(*input.ExpectedHeadSHA)
+		if shaErr != nil {
+			return nil, &GitHubError{
+				StatusCode: 422,
+				Message:    shaErr.Error(),
+				Type:       "validation",
+			}
+		}
+		if normalizedSHA != "" {
+			requestPayload["expected_head_sha"] = normalizedSHA
+		}
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/pulls/%d/update-branch",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+		input.Number,
+	)
+
+	var payloadResponse struct {
+		Message string `json:"message"`
+	}
+	if err := s.executePRRESTJSON(prActionUpdateBranch, http.MethodPut, endpointPath, nil, requestPayload, &payloadResponse); err != nil {
+		return nil, err
+	}
+
+	result := PRUpdateBranchResult{
+		Message: strings.TrimSpace(payloadResponse.Message),
+	}
+	if result.Message == "" {
+		result.Message = "Pull request branch update requested."
+	}
+
+	s.cache.Invalidate(normalizedOwner, normalizedRepo)
+	log.Printf("[GitHub] Requested update-branch for PR #%d", input.Number)
+	return &result, nil
 }
 
 // MergePullRequest faz merge de um PR
 func (s *Service) MergePullRequest(owner, repo string, number int, method MergeMethod) error {
-	pr, err := s.GetPullRequest(owner, repo, number)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.executeQuery(MutationMergePR, map[string]interface{}{
-		"input": map[string]interface{}{
-			"pullRequestId": pr.ID,
-			"mergeMethod":   string(method),
-		},
+	_, err := s.MergePullRequestREST(MergePRInput{
+		Owner:       owner,
+		Repo:        repo,
+		Number:      number,
+		MergeMethod: PRMergeMethod(string(method)),
 	})
-	if err != nil {
-		return err
-	}
-
-	s.cache.Invalidate(owner, repo)
-	log.Printf("[GitHub] Merged PR #%d (%s)", number, method)
-	return nil
+	return err
 }
 
 // ClosePullRequest fecha um PR
@@ -708,38 +1776,11 @@ func (s *Service) CreateComment(input CreateCommentInput) (*Comment, error) {
 
 // CreateInlineComment cria um comentário inline no diff (via REST API, pois GraphQL não suporta position facilmente)
 func (s *Service) CreateInlineComment(input InlineCommentInput) (*Comment, error) {
-	// Para inline comments, usaremos a REST API v3 como fallback
-	token, err := s.token()
-	if err != nil {
-		return nil, &GitHubError{StatusCode: 401, Message: "Not authenticated", Type: "auth"}
-	}
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/comments", input.Owner, input.Repo, input.PRNumber)
-
 	payload := map[string]interface{}{
 		"body": input.Body,
 		"path": input.Path,
 		"line": input.Line,
 		"side": input.Side,
-	}
-
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/vnd.github+json")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, &GitHubError{StatusCode: 0, Message: "Network error", Type: "network"}
-	}
-	defer resp.Body.Close()
-
-	s.updateRateLimit(resp.Header)
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 201 {
-		return nil, s.handleHTTPError(resp.StatusCode, respBody)
 	}
 
 	var restComment struct {
@@ -754,7 +1795,14 @@ func (s *Service) CreateInlineComment(input InlineCommentInput) (*Comment, error
 		} `json:"user"`
 	}
 
-	if err := json.Unmarshal(respBody, &restComment); err != nil {
+	if err := s.executePRRESTJSON(
+		prActionInlineCommentCreate,
+		http.MethodPost,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", input.Owner, input.Repo, input.PRNumber),
+		nil,
+		payload,
+		&restComment,
+	); err != nil {
 		return nil, err
 	}
 
@@ -934,6 +1982,132 @@ func (s *Service) UpdateIssue(owner, repo string, number int, input UpdateIssueI
 	s.cache.Invalidate(owner, repo)
 	log.Printf("[GitHub] Updated issue #%d", number)
 	return nil
+}
+
+func normalizeLabelName(raw string) (string, error) {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return "", &GitHubError{
+			StatusCode: 422,
+			Message:    "label name required",
+			Type:       "validation",
+		}
+	}
+	if len([]rune(normalized)) > maxLabelNameLength {
+		return "", &GitHubError{
+			StatusCode: 422,
+			Message:    fmt.Sprintf("label name too long (max %d characters)", maxLabelNameLength),
+			Type:       "validation",
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeLabelColor(raw string) (string, error) {
+	normalized := strings.TrimSpace(raw)
+	normalized = strings.TrimPrefix(normalized, "#")
+	normalized = strings.ToLower(normalized)
+	if !labelColorRegex.MatchString(normalized) {
+		return "", &GitHubError{
+			StatusCode: 422,
+			Message:    "label color must be a 6-character hexadecimal value",
+			Type:       "validation",
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeLabelDescription(raw *string) (*string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	normalized := strings.TrimSpace(*raw)
+	if normalized == "" {
+		return nil, nil
+	}
+	if len([]rune(normalized)) > maxLabelDescriptionLength {
+		return nil, &GitHubError{
+			StatusCode: 422,
+			Message:    fmt.Sprintf("label description too long (max %d characters)", maxLabelDescriptionLength),
+			Type:       "validation",
+		}
+	}
+	return &normalized, nil
+}
+
+// CreateLabel cria uma label de repositorio via GitHub REST API v3.
+func (s *Service) CreateLabel(input CreateLabelInput) (*Label, error) {
+	normalizedOwner, normalizedRepo, normalizeErr := normalizeOwnerRepoForPR(input.Owner, input.Repo)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
+
+	normalizedName, nameErr := normalizeLabelName(input.Name)
+	if nameErr != nil {
+		return nil, nameErr
+	}
+
+	normalizedColor, colorErr := normalizeLabelColor(input.Color)
+	if colorErr != nil {
+		return nil, colorErr
+	}
+
+	normalizedDescription, descriptionErr := normalizeLabelDescription(input.Description)
+	if descriptionErr != nil {
+		return nil, descriptionErr
+	}
+
+	requestPayload := map[string]interface{}{
+		"name":  normalizedName,
+		"color": normalizedColor,
+	}
+	if normalizedDescription != nil {
+		requestPayload["description"] = *normalizedDescription
+	}
+
+	endpointPath := fmt.Sprintf(
+		"/repos/%s/%s/labels",
+		url.PathEscape(normalizedOwner),
+		url.PathEscape(normalizedRepo),
+	)
+
+	var payloadResponse struct {
+		Name        string `json:"name"`
+		Color       string `json:"color"`
+		Description string `json:"description"`
+	}
+	if err := s.executePRRESTJSON(
+		prActionLabelCreate,
+		http.MethodPost,
+		endpointPath,
+		nil,
+		requestPayload,
+		&payloadResponse,
+	); err != nil {
+		return nil, err
+	}
+
+	responseName := strings.TrimSpace(payloadResponse.Name)
+	if responseName == "" {
+		responseName = normalizedName
+	}
+
+	responseColor, responseColorErr := normalizeLabelColor(payloadResponse.Color)
+	if responseColorErr != nil {
+		responseColor = normalizedColor
+	}
+
+	responseDescription := strings.TrimSpace(payloadResponse.Description)
+	label := &Label{
+		Name:        responseName,
+		Color:       responseColor,
+		Description: responseDescription,
+	}
+
+	s.cache.Invalidate(normalizedOwner, normalizedRepo)
+	log.Printf("[GitHub] Created label %q on %s/%s", label.Name, normalizedOwner, normalizedRepo)
+	return label, nil
 }
 
 // === Branches ===
@@ -1119,7 +2293,122 @@ func (s *Service) ResolveCommitAuthors(owner, repo string, hashes []string) (map
 
 // === Internal Helpers ===
 
-var commitHashRegex = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
+var (
+	commitHashRegex     = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
+	fullCommitHashRegex = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+	labelColorRegex     = regexp.MustCompile(`^[a-f0-9]{6}$`)
+	binaryExtSet        = map[string]struct{}{
+		".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".bmp": {}, ".webp": {}, ".ico": {},
+		".pdf": {}, ".zip": {}, ".gz": {}, ".tar": {}, ".tgz": {}, ".7z": {}, ".rar": {},
+		".mp3": {}, ".wav": {}, ".ogg": {}, ".mp4": {}, ".mov": {}, ".avi": {}, ".mkv": {},
+		".ttf": {}, ".otf": {}, ".woff": {}, ".woff2": {}, ".eot": {},
+		".exe": {}, ".dll": {}, ".so": {}, ".dylib": {}, ".bin": {}, ".wasm": {},
+	}
+)
+
+func normalizeRESTPagination(page, perPage int) (int, int) {
+	normalizedPage := page
+	if normalizedPage < defaultRESTPage {
+		normalizedPage = defaultRESTPage
+	}
+
+	normalizedPerPage := perPage
+	if normalizedPerPage <= 0 {
+		normalizedPerPage = defaultRESTPerPage
+	}
+	if normalizedPerPage > maxRESTPerPage {
+		normalizedPerPage = maxRESTPerPage
+	}
+
+	return normalizedPage, normalizedPerPage
+}
+
+func parseNextPageFromLinkHeader(linkHeader string) (int, bool) {
+	normalized := strings.TrimSpace(linkHeader)
+	if normalized == "" {
+		return 0, false
+	}
+
+	parts := strings.Split(normalized, ",")
+	for _, part := range parts {
+		segment := strings.TrimSpace(part)
+		if segment == "" || !strings.Contains(segment, `rel="next"`) {
+			continue
+		}
+
+		open := strings.Index(segment, "<")
+		close := strings.Index(segment, ">")
+		if open == -1 || close <= open+1 {
+			return 0, true
+		}
+
+		nextURL, err := url.Parse(segment[open+1 : close])
+		if err != nil {
+			return 0, true
+		}
+
+		pageRaw := strings.TrimSpace(nextURL.Query().Get("page"))
+		if pageRaw == "" {
+			return 0, true
+		}
+
+		nextPage, atoiErr := strconv.Atoi(pageRaw)
+		if atoiErr != nil || nextPage <= 0 {
+			return 0, true
+		}
+
+		return nextPage, true
+	}
+
+	return 0, false
+}
+
+func patchLooksBinary(patch string) bool {
+	normalizedPatch := strings.TrimSpace(patch)
+	return strings.Contains(normalizedPatch, "Binary files ") || strings.Contains(normalizedPatch, "GIT binary patch")
+}
+
+func patchLooksTruncated(patch string) bool {
+	normalizedPatch := strings.TrimSpace(patch)
+	if normalizedPatch == "" {
+		return false
+	}
+
+	lines := strings.Split(normalizedPatch, "\n")
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	if lastLine == "..." {
+		return true
+	}
+
+	return strings.Contains(normalizedPatch, "\n...\n")
+}
+
+func truncatePRFilePatch(patch string) (string, bool) {
+	if len(patch) <= maxPRFilePatchBytes {
+		return patch, false
+	}
+
+	trimmed := patch[:maxPRFilePatchBytes]
+	if lineBreak := strings.LastIndex(trimmed, "\n"); lineBreak > 0 {
+		trimmed = trimmed[:lineBreak]
+	}
+
+	trimmed = strings.TrimRight(trimmed, "\n")
+	if trimmed == "" {
+		trimmed = patch[:maxPRFilePatchBytes]
+	}
+
+	return trimmed + "\n...", true
+}
+
+func filenameLooksBinary(path string) bool {
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(path)))
+	if ext == "" {
+		return false
+	}
+	_, ok := binaryExtSet[ext]
+	return ok
+}
 
 func normalizeCommitHashes(hashes []string) []string {
 	if len(hashes) == 0 {

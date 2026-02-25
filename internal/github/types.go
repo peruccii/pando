@@ -12,8 +12,9 @@ type User struct {
 
 // Label representa uma label do GitHub
 type Label struct {
-	Name  string `json:"name"`
-	Color string `json:"color"`
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description,omitempty"`
 }
 
 // Repository representa um repositório do GitHub
@@ -32,34 +33,37 @@ type Repository struct {
 
 // PullRequest representa um PR do GitHub
 type PullRequest struct {
-	ID           string    `json:"id"`
-	Number       int       `json:"number"`
-	Title        string    `json:"title"`
-	Body         string    `json:"body"`
-	State        string    `json:"state"` // "OPEN", "CLOSED", "MERGED"
-	Author       User      `json:"author"`
-	Reviewers    []User    `json:"reviewers"`
-	Labels       []Label   `json:"labels"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	MergeCommit  *string   `json:"mergeCommit,omitempty"`
-	HeadBranch   string    `json:"headBranch"`
-	BaseBranch   string    `json:"baseBranch"`
-	Additions    int       `json:"additions"`
-	Deletions    int       `json:"deletions"`
-	ChangedFiles int       `json:"changedFiles"`
-	IsDraft      bool      `json:"isDraft"`
+	ID                  string    `json:"id"`
+	Number              int       `json:"number"`
+	Title               string    `json:"title"`
+	Body                string    `json:"body"`
+	State               string    `json:"state"` // "OPEN", "CLOSED", "MERGED"
+	Author              User      `json:"author"`
+	Reviewers           []User    `json:"reviewers"`
+	Labels              []Label   `json:"labels"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+	MergeCommit         *string   `json:"mergeCommit,omitempty"`
+	HeadBranch          string    `json:"headBranch"`
+	BaseBranch          string    `json:"baseBranch"`
+	Additions           int       `json:"additions"`
+	Deletions           int       `json:"deletions"`
+	ChangedFiles        int       `json:"changedFiles"`
+	IsDraft             bool      `json:"isDraft"`
+	MaintainerCanModify *bool     `json:"maintainerCanModify,omitempty"`
 }
 
 // PRFilters define os filtros para listagem de PRs
 type PRFilters struct {
-	State     string   `json:"state"` // "OPEN", "CLOSED", "MERGED", "ALL"
+	State     string   `json:"state"` // "OPEN", "CLOSED", "MERGED", "ALL", "open", "closed", "all"
 	Author    *string  `json:"author"`
 	Labels    []string `json:"labels"`
 	OrderBy   string   `json:"orderBy"`   // "CREATED_AT", "UPDATED_AT"
 	Direction string   `json:"direction"` // "ASC", "DESC"
-	First     int      `json:"first"`
-	After     *string  `json:"after"` // Cursor para paginação
+	First     int      `json:"first"`     // Compatibilidade com GraphQL (mapeado para per_page no REST)
+	After     *string  `json:"after"`     // Cursor para paginação GraphQL (legado)
+	Page      int      `json:"page"`      // Paginação REST (1-indexed)
+	PerPage   int      `json:"perPage"`   // Paginação REST
 }
 
 // MergeMethod define o método de merge
@@ -73,13 +77,123 @@ const (
 
 // CreatePRInput define os campos para criação de um PR
 type CreatePRInput struct {
-	Owner      string `json:"owner"`
-	Repo       string `json:"repo"`
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	HeadBranch string `json:"headBranch"`
-	BaseBranch string `json:"baseBranch"`
-	IsDraft    bool   `json:"isDraft"`
+	Owner               string `json:"owner"`
+	Repo                string `json:"repo"`
+	Title               string `json:"title"`
+	Body                string `json:"body"`
+	HeadBranch          string `json:"headBranch"`
+	BaseBranch          string `json:"baseBranch"`
+	IsDraft             bool   `json:"isDraft"`
+	MaintainerCanModify *bool  `json:"maintainerCanModify,omitempty"`
+}
+
+// UpdatePRInput define os campos para atualização de um PR existente.
+type UpdatePRInput struct {
+	Owner               string  `json:"owner"`
+	Repo                string  `json:"repo"`
+	Number              int     `json:"number"`
+	Title               *string `json:"title,omitempty"`
+	Body                *string `json:"body,omitempty"`
+	State               *string `json:"state,omitempty"` // "open", "closed"
+	BaseBranch          *string `json:"baseBranch,omitempty"`
+	MaintainerCanModify *bool   `json:"maintainerCanModify,omitempty"`
+}
+
+// PRMergeMethod define os metodos suportados pelo endpoint REST de merge de PR.
+type PRMergeMethod string
+
+const (
+	PRMergeMethodMerge  PRMergeMethod = "merge"
+	PRMergeMethodSquash PRMergeMethod = "squash"
+	PRMergeMethodRebase PRMergeMethod = "rebase"
+)
+
+// MergePRInput define os campos para merge de um PR via REST.
+type MergePRInput struct {
+	Owner       string        `json:"owner"`
+	Repo        string        `json:"repo"`
+	Number      int           `json:"number"`
+	MergeMethod PRMergeMethod `json:"mergeMethod"`
+	SHA         *string       `json:"sha,omitempty"`
+}
+
+// PRMergeResult representa retorno de merge de PR via REST.
+type PRMergeResult struct {
+	SHA     string `json:"sha,omitempty"`
+	Merged  bool   `json:"merged"`
+	Message string `json:"message"`
+}
+
+// UpdatePRBranchInput define os campos para atualizar a branch de um PR via REST.
+type UpdatePRBranchInput struct {
+	Owner           string  `json:"owner"`
+	Repo            string  `json:"repo"`
+	Number          int     `json:"number"`
+	ExpectedHeadSHA *string `json:"expectedHeadSha,omitempty"`
+}
+
+// PRUpdateBranchResult representa retorno de update-branch via REST.
+type PRUpdateBranchResult struct {
+	Message string `json:"message"`
+}
+
+// PRCommit representa um commit de Pull Request via REST.
+type PRCommit struct {
+	SHA            string    `json:"sha"`
+	Message        string    `json:"message"`
+	HTMLURL        string    `json:"htmlUrl,omitempty"`
+	AuthorName     string    `json:"authorName,omitempty"`
+	AuthorEmail    string    `json:"authorEmail,omitempty"`
+	AuthoredAt     time.Time `json:"authoredAt,omitempty"`
+	CommitterName  string    `json:"committerName,omitempty"`
+	CommitterEmail string    `json:"committerEmail,omitempty"`
+	CommittedAt    time.Time `json:"committedAt,omitempty"`
+	Author         *User     `json:"author,omitempty"`
+	Committer      *User     `json:"committer,omitempty"`
+	ParentSHAs     []string  `json:"parentShas,omitempty"`
+}
+
+// PRCommitPage representa uma pagina de commits de Pull Request.
+type PRCommitPage struct {
+	Items       []PRCommit `json:"items"`
+	Page        int        `json:"page"`
+	PerPage     int        `json:"perPage"`
+	HasNextPage bool       `json:"hasNextPage"`
+	NextPage    int        `json:"nextPage,omitempty"`
+}
+
+const (
+	PRFilePatchStateAvailable = "available"
+	PRFilePatchStateMissing   = "missing"
+	PRFilePatchStateBinary    = "binary"
+	PRFilePatchStateTruncated = "truncated"
+)
+
+// PRFile representa um arquivo alterado em Pull Request via REST.
+type PRFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previousFilename,omitempty"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Changes          int    `json:"changes"`
+	BlobURL          string `json:"blobUrl,omitempty"`
+	RawURL           string `json:"rawUrl,omitempty"`
+	ContentsURL      string `json:"contentsUrl,omitempty"`
+	Patch            string `json:"patch,omitempty"`
+	HasPatch         bool   `json:"hasPatch"`
+	PatchState       string `json:"patchState"`
+	IsBinary         bool   `json:"isBinary"`
+	IsPatchTruncated bool   `json:"isPatchTruncated"`
+}
+
+// PRFilePage representa uma pagina de arquivos alterados em Pull Request.
+type PRFilePage struct {
+	Items       []PRFile `json:"items"`
+	Page        int      `json:"page"`
+	PerPage     int      `json:"perPage"`
+	HasNextPage bool     `json:"hasNextPage"`
+	NextPage    int      `json:"nextPage,omitempty"`
 }
 
 // === Diff ===
@@ -221,6 +335,15 @@ type UpdateIssueInput struct {
 	Assignees []string `json:"assignees,omitempty"`
 }
 
+// CreateLabelInput define os campos para criacao de uma label de repositorio.
+type CreateLabelInput struct {
+	Owner       string  `json:"owner"`
+	Repo        string  `json:"repo"`
+	Name        string  `json:"name"`
+	Color       string  `json:"color"`
+	Description *string `json:"description,omitempty"`
+}
+
 // === Branches ===
 
 // Branch representa uma branch do repositório
@@ -261,7 +384,14 @@ type IGitHubService interface {
 	ListPullRequests(owner, repo string, filters PRFilters) ([]PullRequest, error)
 	GetPullRequest(owner, repo string, number int) (*PullRequest, error)
 	GetPullRequestDiff(owner, repo string, number int, pagination DiffPagination) (*Diff, error)
+	GetPullRequestCommits(owner, repo string, number int, page, perPage int) (*PRCommitPage, error)
+	GetPullRequestFiles(owner, repo string, number int, page, perPage int) (*PRFilePage, error)
+	GetPullRequestRawDiff(owner, repo string, number int) (string, error)
+	CheckPullRequestMerged(owner, repo string, number int) (bool, error)
 	CreatePullRequest(input CreatePRInput) (*PullRequest, error)
+	UpdatePullRequest(input UpdatePRInput) (*PullRequest, error)
+	MergePullRequestREST(input MergePRInput) (*PRMergeResult, error)
+	UpdatePullRequestBranch(input UpdatePRBranchInput) (*PRUpdateBranchResult, error)
 	MergePullRequest(owner, repo string, number int, method MergeMethod) error
 	ClosePullRequest(owner, repo string, number int) error
 
@@ -276,6 +406,7 @@ type IGitHubService interface {
 	ListIssues(owner, repo string, filters IssueFilters) ([]Issue, error)
 	CreateIssue(input CreateIssueInput) (*Issue, error)
 	UpdateIssue(owner, repo string, number int, input UpdateIssueInput) error
+	CreateLabel(input CreateLabelInput) (*Label, error)
 
 	// Branches
 	ListBranches(owner, repo string) ([]Branch, error)

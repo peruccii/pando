@@ -5,7 +5,13 @@ type GitPanelMockMode = 'default' | 'conflict' | 'large_binary'
 export interface GitPanelMockOptions {
   mode?: GitPanelMockMode
   historyCount?: number
+  prCount?: number
   writeDelayMs?: number
+  prListDelayMs?: number
+  prDetailDelayMs?: number
+  prFilesDelayMs?: number
+  prCommitsDelayMs?: number
+  prRawDiffDelayMs?: number
   failStage?: boolean
 }
 
@@ -14,6 +20,11 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
     const opts: GitPanelMockOptions = rawOptions ?? {}
     const mode = opts.mode ?? 'default'
     const writeDelay = Math.max(0, opts.writeDelayMs ?? 40)
+    const prListDelay = Math.max(0, opts.prListDelayMs ?? 320)
+    const prDetailDelay = Math.max(0, opts.prDetailDelayMs ?? 260)
+    const prFilesDelay = Math.max(0, opts.prFilesDelayMs ?? 380)
+    const prCommitsDelay = Math.max(0, opts.prCommitsDelayMs ?? 280)
+    const prRawDiffDelay = Math.max(0, opts.prRawDiffDelayMs ?? 420)
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
 
     const runtime = {
@@ -83,6 +94,135 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
       return out
     }
 
+    function wait(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms))
+    }
+
+    function clone<T>(value: T): T {
+      return JSON.parse(JSON.stringify(value)) as T
+    }
+
+    function makePullRequests(count: number) {
+      const total = Math.max(6, Math.floor(count))
+      const now = Date.now()
+      const out: Array<Record<string, unknown>> = []
+      for (let i = 0; i < total; i += 1) {
+        const number = 1200 + i
+        const isClosed = i % 6 === 0
+        const isMerged = i % 11 === 0
+        const state = isMerged ? 'merged' : isClosed ? 'closed' : 'open'
+        out.push({
+          id: `pr_${number}`,
+          number,
+          title: `feat(mock): fluxo ${number}`,
+          body: `Mock PR #${number} para validar budgets da aba PRs.`,
+          state,
+          author: {
+            login: i % 2 === 0 ? 'alice-dev' : 'bob-dev',
+            avatarUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+          },
+          reviewers: [],
+          labels: [{ name: i % 2 === 0 ? 'backend' : 'frontend', color: i % 2 === 0 ? '0ea5e9' : '10b981' }],
+          createdAt: new Date(now - (i + 1) * 60_000).toISOString(),
+          updatedAt: new Date(now - i * 30_000).toISOString(),
+          headBranch: `feature/mock-${number}`,
+          baseBranch: 'main',
+          additions: 20 + (i % 9) * 3,
+          deletions: 8 + (i % 5) * 2,
+          changedFiles: 10 + (i % 6),
+          isDraft: i % 7 === 0,
+          maintainerCanModify: true,
+        })
+      }
+      return out
+    }
+
+    function buildPatch(index: number): string {
+      const lines = [
+        `@@ -${index + 1},3 +${index + 1},4 @@`,
+        `-const oldValue${index} = ${index}`,
+        `+const oldValue${index} = ${index + 1}`,
+        `+const retryBudget${index} = true`,
+        ' export function applyBudget() {',
+        `-  return ${index}`,
+        `+  return ${index + 1}`,
+        ' }',
+      ]
+      if (index % 13 === 0) {
+        lines.push('...')
+      }
+      return lines.join('\n')
+    }
+
+    function makePRFiles(prNumber: number, count: number) {
+      const total = Math.max(1, Math.floor(count))
+      const out: Array<Record<string, unknown>> = []
+      for (let i = 0; i < total; i += 1) {
+        const fileIndex = prNumber * 100 + i
+        const isBinary = mode === 'large_binary' && i % 17 === 0
+        const isTruncated = i % 13 === 0
+        const patch = isBinary ? '' : buildPatch(fileIndex)
+        out.push({
+          filename: `src/mock/file-${prNumber}-${i}.ts`,
+          previousFilename: i % 8 === 0 ? `src/mock/legacy-${prNumber}-${i}.ts` : '',
+          status: i % 9 === 0 ? 'renamed' : 'modified',
+          additions: 4 + (i % 7),
+          deletions: 1 + (i % 4),
+          changes: 5 + (i % 8),
+          blobUrl: '',
+          rawUrl: '',
+          contentsUrl: '',
+          patch,
+          hasPatch: !isBinary,
+          patchState: isBinary ? 'binary' : isTruncated ? 'truncated' : 'available',
+          isBinary,
+          isPatchTruncated: isTruncated && !isBinary,
+        })
+      }
+      return out
+    }
+
+    function makePRCommits(prNumber: number, count: number) {
+      const total = Math.max(1, Math.floor(count))
+      const now = Date.now()
+      const out: Array<Record<string, unknown>> = []
+      for (let i = 0; i < total; i += 1) {
+        const seed = `${prNumber}${i}`.padEnd(40, 'a').slice(0, 40)
+        out.push({
+          sha: seed,
+          message: `mock(pr:${prNumber}): ajuste ${i + 1}`,
+          htmlUrl: '',
+          authorName: i % 2 === 0 ? 'Alice' : 'Bob',
+          authoredAt: new Date(now - (i + 1) * 45_000).toISOString(),
+          committerName: i % 2 === 0 ? 'Alice' : 'Bob',
+          committedAt: new Date(now - (i + 1) * 42_000).toISOString(),
+          author: {
+            login: i % 2 === 0 ? 'alice-dev' : 'bob-dev',
+            avatarUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+          },
+          committer: {
+            login: i % 2 === 0 ? 'alice-dev' : 'bob-dev',
+            avatarUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+          },
+          parentShas: [],
+        })
+      }
+      return out
+    }
+
+    function paginate<T>(items: T[], page: number, perPage: number): { items: T[]; hasNextPage: boolean; nextPage?: number } {
+      const safePage = Math.max(1, Math.floor(page || 1))
+      const safePerPage = Math.max(1, Math.floor(perPage || 25))
+      const start = (safePage - 1) * safePerPage
+      const pagedItems = items.slice(start, start + safePerPage)
+      const hasNextPage = start + safePerPage < items.length
+      return {
+        items: pagedItems,
+        hasNextPage,
+        nextPage: hasNextPage ? safePage + 1 : undefined,
+      }
+    }
+
     const state = {
       writeInFlight: false,
       overlapCount: 0,
@@ -116,6 +256,25 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
         conflicted: mode === 'conflict' ? [{ path: 'conflict.txt', status: 'UU' }] : [],
       },
       history: makeHistory(Math.max(120, opts.historyCount ?? 520)),
+      prs: makePullRequests(Math.max(16, opts.prCount ?? 36)),
+      prFilesByNumber: new Map<number, Array<Record<string, unknown>>>(),
+      prCommitsByNumber: new Map<number, Array<Record<string, unknown>>>(),
+      prCalls: {
+        list: 0,
+        detail: 0,
+        files: 0,
+        commits: 0,
+        rawDiff: 0,
+        create: 0,
+        update: 0,
+        checkMerged: 0,
+        merge: 0,
+        updateBranch: 0,
+      },
+      lastPRActions: {
+        mergeMethod: '',
+        expectedHeadSha: '',
+      },
     }
 
     async function runWrite(action: string, fn: () => void): Promise<void> {
@@ -132,6 +291,46 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
       } finally {
         state.writeInFlight = false
       }
+    }
+
+    function resolvePRStateForFilter(rawState: unknown): 'open' | 'closed' | 'all' {
+      const normalized = typeof rawState === 'string' ? rawState.trim().toLowerCase() : ''
+      if (normalized === 'closed') {
+        return 'closed'
+      }
+      if (normalized === 'all') {
+        return 'all'
+      }
+      return 'open'
+    }
+
+    function normalizePRState(state: unknown): 'open' | 'closed' {
+      const normalized = typeof state === 'string' ? state.trim().toLowerCase() : ''
+      if (normalized === 'closed' || normalized === 'merged') {
+        return 'closed'
+      }
+      return 'open'
+    }
+
+    function getPRByNumber(prNumber: number): Record<string, unknown> | null {
+      const safeNumber = Math.max(1, Math.floor(prNumber || 0))
+      return state.prs.find((item) => item.number === safeNumber) ?? null
+    }
+
+    function getPRFiles(prNumber: number): Array<Record<string, unknown>> {
+      const safeNumber = Math.max(1, Math.floor(prNumber || 0))
+      if (!state.prFilesByNumber.has(safeNumber)) {
+        state.prFilesByNumber.set(safeNumber, makePRFiles(safeNumber, 58))
+      }
+      return state.prFilesByNumber.get(safeNumber) ?? []
+    }
+
+    function getPRCommits(prNumber: number): Array<Record<string, unknown>> {
+      const safeNumber = Math.max(1, Math.floor(prNumber || 0))
+      if (!state.prCommitsByNumber.has(safeNumber)) {
+        state.prCommitsByNumber.set(safeNumber, makePRCommits(safeNumber, 85))
+      }
+      return state.prCommitsByNumber.get(safeNumber) ?? []
     }
 
     function getDiffPayload(filePath: string) {
@@ -264,6 +463,242 @@ export async function installGitPanelMock(page: Page, options: GitPanelMockOptio
         }
       },
       GitPanelGetDiff: async (_repoPath: string, filePath: string) => getDiffPayload(filePath),
+      AuthLogin: async (_provider: string) => ({}),
+      GitPanelPRResolveRepository: async (repoPath: string, owner: string, repo: string) => ({
+        repoPath: (repoPath || '').trim(),
+        repoRoot: '/mock/repo',
+        owner: (owner || 'acme').trim() || 'acme',
+        repo: (repo || 'orch').trim() || 'orch',
+        source: 'origin',
+        originOwner: 'acme',
+        originRepo: 'orch',
+        overrideConfirmed: true,
+      }),
+      StartPolling: async () => {},
+      StopPolling: async () => {},
+      SetPollingContext: async () => {},
+      GitPanelPRList: async (_repoPath: string, stateFilter: string, page: number, perPage: number) => {
+        state.prCalls.list += 1
+        await wait(prListDelay)
+        const filter = resolvePRStateForFilter(stateFilter)
+        const ordered = [...state.prs].sort((left, right) => {
+          const leftTime = new Date(String(left.updatedAt || '')).getTime()
+          const rightTime = new Date(String(right.updatedAt || '')).getTime()
+          return rightTime - leftTime
+        })
+        const filtered = filter === 'all'
+          ? ordered
+          : ordered.filter((item) => normalizePRState(item.state) === filter)
+        const pageSlice = paginate(filtered, page, perPage)
+        return clone(pageSlice.items)
+      },
+      GitPanelPRGet: async (_repoPath: string, prNumber: number) => {
+        state.prCalls.detail += 1
+        await wait(prDetailDelay)
+        const found = getPRByNumber(prNumber)
+        if (!found) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        return clone(found)
+      },
+      GitPanelPRGetFiles: async (_repoPath: string, prNumber: number, page: number, perPage: number) => {
+        state.prCalls.files += 1
+        await wait(prFilesDelay)
+        const found = getPRByNumber(prNumber)
+        if (!found) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const allFiles = getPRFiles(prNumber)
+        const slice = paginate(allFiles, page, perPage)
+        const safePage = Math.max(1, Math.floor(page || 1))
+        const safePerPage = Math.max(1, Math.floor(perPage || 25))
+        return {
+          items: clone(slice.items),
+          page: safePage,
+          perPage: safePerPage,
+          hasNextPage: slice.hasNextPage,
+          nextPage: slice.nextPage,
+        }
+      },
+      GitPanelPRGetCommits: async (_repoPath: string, prNumber: number, page: number, perPage: number) => {
+        state.prCalls.commits += 1
+        await wait(prCommitsDelay)
+        const found = getPRByNumber(prNumber)
+        if (!found) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const allCommits = getPRCommits(prNumber)
+        const slice = paginate(allCommits, page, perPage)
+        const safePage = Math.max(1, Math.floor(page || 1))
+        const safePerPage = Math.max(1, Math.floor(perPage || 25))
+        return {
+          items: clone(slice.items),
+          page: safePage,
+          perPage: safePerPage,
+          hasNextPage: slice.hasNextPage,
+          nextPage: slice.nextPage,
+        }
+      },
+      GitPanelPRGetRawDiff: async (_repoPath: string, prNumber: number) => {
+        state.prCalls.rawDiff += 1
+        await wait(prRawDiffDelay)
+        const found = getPRByNumber(prNumber)
+        if (!found) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const files = getPRFiles(prNumber).slice(0, 12)
+        const lines: string[] = []
+        for (const item of files) {
+          const filename = String(item.filename || 'unknown.txt')
+          const patch = String(item.patch || '')
+          lines.push(`diff --git a/${filename} b/${filename}`)
+          lines.push(`--- a/${filename}`)
+          lines.push(`+++ b/${filename}`)
+          lines.push(patch || 'Binary files differ')
+        }
+        return lines.join('\n')
+      },
+      GitPanelPRGetCommitRawDiff: async (_repoPath: string, prNumber: number, commitSHA: string) => {
+        state.prCalls.rawDiff += 1
+        await wait(prRawDiffDelay)
+        const found = getPRByNumber(prNumber)
+        if (!found) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const files = getPRFiles(prNumber).slice(0, 6)
+        const lines: string[] = [`# commit ${commitSHA}`]
+        for (const item of files) {
+          const filename = String(item.filename || 'unknown.txt')
+          const patch = String(item.patch || '')
+          lines.push(`diff --git a/${filename} b/${filename}`)
+          lines.push(`--- a/${filename}`)
+          lines.push(`+++ b/${filename}`)
+          lines.push(patch || 'Binary files differ')
+        }
+        return lines.join('\n')
+      },
+      GitPanelPRCreate: async (_repoPath: string, payload: Record<string, unknown>) => {
+        state.prCalls.create += 1
+        await wait(prDetailDelay)
+        const maxNumber = state.prs.reduce((current, item) => Math.max(current, Number(item.number) || 0), 1200)
+        const nextNumber = maxNumber + 1
+        const nowISO = new Date().toISOString()
+        const created = {
+          id: `pr_${nextNumber}`,
+          number: nextNumber,
+          title: String(payload.title || '').trim() || `mock: nova PR ${nextNumber}`,
+          body: String(payload.body || ''),
+          state: 'open',
+          author: { login: 'alice-dev', avatarUrl: 'https://avatars.githubusercontent.com/u/1?v=4' },
+          reviewers: [],
+          labels: [],
+          createdAt: nowISO,
+          updatedAt: nowISO,
+          headBranch: String(payload.head || `feature/mock-${nextNumber}`),
+          baseBranch: String(payload.base || 'main'),
+          additions: 15,
+          deletions: 4,
+          changedFiles: 7,
+          isDraft: Boolean(payload.draft),
+          maintainerCanModify: payload.maintainerCanModify !== false,
+        }
+        state.prs.unshift(created)
+        runtime.EventsEmit('github:prs:updated', { owner: 'acme', repo: 'orch', count: 1 })
+        return clone(created)
+      },
+      GitPanelPRUpdate: async (_repoPath: string, prNumber: number, payload: Record<string, unknown>) => {
+        state.prCalls.update += 1
+        await wait(prDetailDelay)
+        const index = state.prs.findIndex((item) => item.number === prNumber)
+        if (index < 0) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const current = state.prs[index]
+        const next = {
+          ...current,
+          title: typeof payload.title === 'string' ? payload.title : current.title,
+          body: typeof payload.body === 'string' ? payload.body : current.body,
+          state: typeof payload.state === 'string' ? payload.state : current.state,
+          baseBranch: typeof payload.base === 'string' ? payload.base : current.baseBranch,
+          maintainerCanModify: typeof payload.maintainerCanModify === 'boolean'
+            ? payload.maintainerCanModify
+            : current.maintainerCanModify,
+          updatedAt: new Date().toISOString(),
+        }
+        state.prs[index] = next
+        runtime.EventsEmit('github:prs:updated', { owner: 'acme', repo: 'orch', count: 1 })
+        return clone(next)
+      },
+      GitPanelPRCheckMerged: async (_repoPath: string, prNumber: number) => {
+        state.prCalls.checkMerged += 1
+        const found = getPRByNumber(prNumber)
+        return found ? String(found.state).toLowerCase() === 'merged' : false
+      },
+      GitPanelPRMerge: async (_repoPath: string, prNumber: number, payload: Record<string, unknown>) => {
+        state.prCalls.merge += 1
+        const mergeMethod = typeof payload.mergeMethod === 'string' ? payload.mergeMethod.trim().toLowerCase() : ''
+        const index = state.prs.findIndex((item) => item.number === prNumber)
+        if (index < 0) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+        const current = state.prs[index]
+        state.prs[index] = { ...current, state: 'merged', updatedAt: new Date().toISOString() }
+        state.lastPRActions.mergeMethod = mergeMethod
+        runtime.EventsEmit('github:prs:updated', { owner: 'acme', repo: 'orch', count: 1 })
+        return {
+          sha: `${prNumber}`.padEnd(40, 'a').slice(0, 40),
+          merged: true,
+          message: `Pull Request mergeada com sucesso (${mergeMethod || 'merge'}).`,
+        }
+      },
+      GitPanelPRUpdateBranch: async (_repoPath: string, prNumber: number, payload: Record<string, unknown>) => {
+        state.prCalls.updateBranch += 1
+        await wait(prDetailDelay)
+
+        const index = state.prs.findIndex((item) => item.number === prNumber)
+        if (index < 0) {
+          throw new Error(JSON.stringify({
+            code: 'E_PR_NOT_FOUND',
+            message: `PR #${prNumber} nao encontrada.`,
+          }))
+        }
+
+        const expectedHeadSha = typeof payload.expectedHeadSha === 'string'
+          ? payload.expectedHeadSha.trim()
+          : ''
+        state.lastPRActions.expectedHeadSha = expectedHeadSha
+        const current = state.prs[index]
+        state.prs[index] = {
+          ...current,
+          updatedAt: new Date().toISOString(),
+        }
+        runtime.EventsEmit('github:prs:updated', { owner: 'acme', repo: 'orch', count: 1 })
+
+        return {
+          message: 'Branch atualizada com sucesso.',
+        }
+      },
       GitPanelStageFile: async (_repoPath: string, filePath: string) => stageFile(filePath),
       GitPanelUnstageFile: async (_repoPath: string, filePath: string) => unstageFile(filePath),
       GitPanelStagePatch: async () => {

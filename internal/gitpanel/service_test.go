@@ -532,6 +532,33 @@ func TestGetStatusUsesShortLivedCache(t *testing.T) {
 	}
 }
 
+func TestGetStatusPrefersCanonicalBranchCaseFromPreflight(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	runner := func(ctx context.Context, timeout time.Duration, stdin string, args ...string) (string, string, int, error) {
+		if hasArgSequence(args, "rev-parse", "--show-toplevel") {
+			return repoRoot, "", 0, nil
+		}
+		if hasArgSequence(args, "rev-parse", "--abbrev-ref", "HEAD") {
+			return "Feature/pagamento\n", "", 0, nil
+		}
+		if hasArgSequence(args, "status", "--porcelain=v1", "-z", "--branch") {
+			return "## feature/pagamento...origin/feature/pagamento [ahead 1]\x00", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+
+	svc := newServiceWithDeps(nil, runner, sleepWithContext)
+
+	status, err := svc.GetStatus(repoRoot)
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	if status.Branch != "Feature/pagamento" {
+		t.Fatalf("unexpected branch casing: got=%q want=%q", status.Branch, "Feature/pagamento")
+	}
+}
+
 func TestInvalidateRepoCacheForcesFreshStatusRead(t *testing.T) {
 	repoRoot := t.TempDir()
 

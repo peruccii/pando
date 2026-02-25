@@ -31,6 +31,7 @@ import (
 	ga "orch/internal/gitactivity"
 	gh "orch/internal/github"
 	gp "orch/internal/gitpanel"
+	gpr "orch/internal/gitprs"
 	"orch/internal/security"
 	"orch/internal/session"
 	"orch/internal/terminal"
@@ -49,9 +50,12 @@ const (
 	gitPanelRepoIdentityCacheTTL      = 10 * time.Minute
 	gitPanelAuthorLookupTimeout       = 4 * time.Second
 	gitPanelAuthorLookupPerRequest    = 40
+	gitPanelPRLocalBranchTimeout      = 12 * time.Second
 )
 
 var gitPanelCommitHashRegex = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
+var gitPanelFullCommitHashRegex = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+var gitPanelLabelColorRegex = regexp.MustCompile(`^#?[a-fA-F0-9]{6}$`)
 
 type gitPanelInvalidationPlan struct {
 	Status    bool
@@ -84,6 +88,72 @@ type gitPanelRepoIdentityCacheEntry struct {
 	owner     string
 	repo      string
 	expiresAt time.Time
+}
+
+// GitPanelPRRepositoryTargetDTO representa o repositorio remoto resolvido para operacoes de PR.
+type GitPanelPRRepositoryTargetDTO struct {
+	RepoPath          string `json:"repoPath"`
+	RepoRoot          string `json:"repoRoot"`
+	Owner             string `json:"owner"`
+	Repo              string `json:"repo"`
+	Source            string `json:"source"` // "origin" | "manual"
+	OriginOwner       string `json:"originOwner,omitempty"`
+	OriginRepo        string `json:"originRepo,omitempty"`
+	ManualOwner       string `json:"manualOwner,omitempty"`
+	ManualRepo        string `json:"manualRepo,omitempty"`
+	OverrideConfirmed bool   `json:"overrideConfirmed,omitempty"`
+}
+
+// GitPanelPRCreatePayloadDTO representa o payload de criacao de PR via Git Panel.
+type GitPanelPRCreatePayloadDTO struct {
+	Title               string `json:"title"`
+	Head                string `json:"head"`
+	Base                string `json:"base"`
+	Body                string `json:"body,omitempty"`
+	Draft               bool   `json:"draft,omitempty"`
+	MaintainerCanModify *bool  `json:"maintainerCanModify,omitempty"`
+	ManualOwner         string `json:"manualOwner,omitempty"`
+	ManualRepo          string `json:"manualRepo,omitempty"`
+	AllowTargetOverride bool   `json:"allowTargetOverride,omitempty"`
+}
+
+// GitPanelPRCreateLabelPayloadDTO representa payload para criacao de label via aba de PR.
+type GitPanelPRCreateLabelPayloadDTO struct {
+	Name        string  `json:"name"`
+	Color       string  `json:"color"`
+	Description *string `json:"description,omitempty"`
+}
+
+// GitPanelPRUpdatePayloadDTO representa o payload de atualização de PR via Git Panel.
+type GitPanelPRUpdatePayloadDTO struct {
+	Title               *string `json:"title,omitempty"`
+	Body                *string `json:"body,omitempty"`
+	State               *string `json:"state,omitempty"`
+	Base                *string `json:"base,omitempty"`
+	MaintainerCanModify *bool   `json:"maintainerCanModify,omitempty"`
+}
+
+// GitPanelPRMergePayloadDTO representa o payload de merge de PR via Git Panel.
+type GitPanelPRMergePayloadDTO struct {
+	MergeMethod string  `json:"mergeMethod,omitempty"` // "merge" | "squash" | "rebase"
+	SHA         *string `json:"sha,omitempty"`
+}
+
+// GitPanelPRUpdateBranchPayloadDTO representa payload de update branch de PR via Git Panel.
+type GitPanelPRUpdateBranchPayloadDTO struct {
+	ExpectedHeadSHA *string `json:"expectedHeadSha,omitempty"`
+}
+
+// GitPanelPRMergeResultDTO representa resultado de merge de PR.
+type GitPanelPRMergeResultDTO struct {
+	SHA     string `json:"sha,omitempty"`
+	Merged  bool   `json:"merged"`
+	Message string `json:"message"`
+}
+
+// GitPanelPRUpdateBranchResultDTO representa resultado de update branch de PR.
+type GitPanelPRUpdateBranchResultDTO struct {
+	Message string `json:"message"`
 }
 
 // App struct — ponto central do Wails, conecta todos os services
@@ -194,6 +264,15 @@ func (a *App) Startup(ctx context.Context) {
 
 	// 5. Inicializar GitHub Service
 	a.github = gh.NewService(a.auth.GetGitHubToken)
+	a.github.SetTelemetryEmitter(func(eventName string, data interface{}) {
+		if a.ctx == nil {
+			return
+		}
+		if strings.TrimSpace(eventName) == "" {
+			return
+		}
+		runtime.EventsEmit(a.ctx, eventName, data)
+	})
 	a.poller = gh.NewPoller(a.github, func(eventName string, data interface{}) {
 		runtime.EventsEmit(a.ctx, eventName, data)
 	})
@@ -2784,6 +2863,1223 @@ func (a *App) GitPanelPreflight(repoPath string) (gp.PreflightResult, error) {
 	return result, nil
 }
 
+// GitPanelPRResolveRepository resolve owner/repo via origin e aceita fallback manual validado.
+func (a *App) GitPanelPRResolveRepository(repoPath, manualOwner, manualRepo string, allowTargetOverride bool) (GitPanelPRRepositoryTargetDTO, error) {
+	result := GitPanelPRRepositoryTargetDTO{}
+	normalizedRepoPath := strings.TrimSpace(repoPath)
+	if normalizedRepoPath == "" {
+		return result, gpr.NewBindingError(
+			gpr.CodeRepoPathRequired,
+			"repoPath obrigatorio para resolver destino de Pull Request.",
+			"Abra um repositorio Git valido antes de acessar a aba PRs.",
+		)
+	}
+
+	svc, svcErr := a.requireGitPanelService()
+	if svcErr != nil {
+		return result, gpr.NewBindingError(
+			gpr.CodeServiceUnavailable,
+			"Git Panel service indisponivel para resolver Pull Requests.",
+			"O backend do Git Panel ainda nao foi inicializado.",
+		)
+	}
+
+	preflight, preflightErr := svc.Preflight(normalizedRepoPath)
+	if preflightErr != nil {
+		if bindingErr := gp.AsBindingError(preflightErr); bindingErr != nil {
+			return result, gpr.NewBindingError(
+				gpr.CodeRepoUnavailable,
+				"Repositorio Git invalido para operacoes de Pull Request.",
+				fmt.Sprintf("%s (%s)", strings.TrimSpace(bindingErr.Message), strings.TrimSpace(bindingErr.Code)),
+			)
+		}
+		return result, gpr.NewBindingError(
+			gpr.CodeRepoUnavailable,
+			"Repositorio Git invalido para operacoes de Pull Request.",
+			preflightErr.Error(),
+		)
+	}
+
+	repoRoot := strings.TrimSpace(preflight.RepoRoot)
+	if repoRoot == "" {
+		repoRoot = strings.TrimSpace(preflight.RepoPath)
+	}
+	if repoRoot == "" {
+		repoRoot = filepath.Clean(normalizedRepoPath)
+	}
+
+	result.RepoPath = normalizedRepoPath
+	result.RepoRoot = repoRoot
+
+	manualProvided := strings.TrimSpace(manualOwner) != "" || strings.TrimSpace(manualRepo) != ""
+	var normalizedManualOwner string
+	var normalizedManualRepo string
+	if manualProvided {
+		var normalizeErr error
+		normalizedManualOwner, normalizedManualRepo, normalizeErr = gpr.NormalizeOwnerRepo(manualOwner, manualRepo)
+		if normalizeErr != nil {
+			return GitPanelPRRepositoryTargetDTO{}, gpr.NewBindingError(
+				gpr.CodeManualRepoInvalid,
+				"Fallback manual owner/repo invalido.",
+				normalizeErr.Error(),
+			)
+		}
+		result.ManualOwner = normalizedManualOwner
+		result.ManualRepo = normalizedManualRepo
+	}
+
+	originOwner, originRepo, originResolved := a.resolveGitHubOwnerRepo(repoRoot)
+	if originResolved {
+		result.OriginOwner = originOwner
+		result.OriginRepo = originRepo
+
+		if manualProvided && !gpr.SameOwnerRepo(originOwner, originRepo, normalizedManualOwner, normalizedManualRepo) {
+			if !allowTargetOverride {
+				return GitPanelPRRepositoryTargetDTO{}, gpr.NewBindingError(
+					gpr.CodeRepoTargetMismatch,
+					"Repositorio manual diverge do origin detectado.",
+					fmt.Sprintf("origin=%s/%s manual=%s/%s", originOwner, originRepo, normalizedManualOwner, normalizedManualRepo),
+				)
+			}
+
+			result.Owner = normalizedManualOwner
+			result.Repo = normalizedManualRepo
+			result.Source = "manual"
+			result.OverrideConfirmed = true
+			return result, nil
+		}
+
+		result.Owner = originOwner
+		result.Repo = originRepo
+		result.Source = "origin"
+		return result, nil
+	}
+
+	if manualProvided {
+		result.Owner = normalizedManualOwner
+		result.Repo = normalizedManualRepo
+		result.Source = "manual"
+		return result, nil
+	}
+
+	return GitPanelPRRepositoryTargetDTO{}, gpr.NewBindingError(
+		gpr.CodeRepoResolveFailed,
+		"Nao foi possivel resolver owner/repo via remote origin.",
+		"Informe owner/repo manualmente para continuar.",
+	)
+}
+
+func (a *App) requireGitHubServiceForPRs() (*gh.Service, error) {
+	if a.github == nil {
+		return nil, gpr.NewBindingError(
+			gpr.CodeServiceUnavailable,
+			"GitHub service indisponivel para operacoes de Pull Request.",
+			"Conecte uma conta GitHub valida antes de usar a aba PRs.",
+		)
+	}
+	return a.github, nil
+}
+
+func (a *App) normalizeGitPanelPRError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if bindingErr := gpr.AsBindingError(err); bindingErr != nil {
+		return bindingErr
+	}
+
+	var githubErr *gh.GitHubError
+	if errors.As(err, &githubErr) {
+		details := strings.TrimSpace(githubErr.Message)
+		normalizedType := strings.TrimSpace(githubErr.Type)
+		if normalizedType != "" {
+			if details == "" {
+				details = "type=" + normalizedType
+			} else {
+				details = fmt.Sprintf("%s (type=%s)", details, normalizedType)
+			}
+		}
+		return gpr.NewHTTPBindingError(githubErr.StatusCode, details)
+	}
+
+	return gpr.NormalizeBindingError(err)
+}
+
+func (a *App) logGitPanelPROperationError(operation, owner, repo string, prNumber int, err error) {
+	if a == nil || err == nil {
+		return
+	}
+
+	sanitizedOperation := strings.TrimSpace(operation)
+	if sanitizedOperation == "" {
+		sanitizedOperation = "unknown"
+	}
+	sanitizedOwner := strings.TrimSpace(owner)
+	if sanitizedOwner == "" {
+		sanitizedOwner = "-"
+	}
+	sanitizedRepo := strings.TrimSpace(repo)
+	if sanitizedRepo == "" {
+		sanitizedRepo = "-"
+	}
+
+	bindingErr := gpr.NormalizeBindingError(err)
+	code := strings.TrimSpace(bindingErr.Code)
+	if code == "" {
+		code = gpr.CodeUnknown
+	}
+
+	log.Printf(
+		"[GitPanel][PR] operation=%s owner=%s repo=%s pr=%d code=%s message=%s details=%s",
+		sanitizedOperation,
+		sanitizedOwner,
+		sanitizedRepo,
+		prNumber,
+		code,
+		a.sanitizeForLogs(strings.TrimSpace(bindingErr.Message)),
+		a.sanitizeForLogs(strings.TrimSpace(bindingErr.Details)),
+	)
+}
+
+func (a *App) resolveGitPanelPROwnerRepo(repoPath string) (string, string, error) {
+	target, err := a.GitPanelPRResolveRepository(repoPath, "", "", false)
+	if err != nil {
+		return "", "", a.normalizeGitPanelPRError(err)
+	}
+
+	owner, repo, normalizeErr := gpr.NormalizeOwnerRepo(target.Owner, target.Repo)
+	if normalizeErr != nil {
+		return "", "", gpr.NewBindingError(
+			gpr.CodeRepoResolveFailed,
+			"Nao foi possivel validar owner/repo para operacoes de Pull Request.",
+			normalizeErr.Error(),
+		)
+	}
+
+	return owner, repo, nil
+}
+
+func (a *App) resolveGitPanelPRRepoRoot(repoPath string) (string, error) {
+	normalizedRepoPath := strings.TrimSpace(repoPath)
+	if normalizedRepoPath == "" {
+		return "", gpr.NewBindingError(
+			gpr.CodeRepoPathRequired,
+			"repoPath obrigatorio para operacoes de Pull Request.",
+			"Abra um repositorio Git valido antes de executar operacoes locais.",
+		)
+	}
+
+	svc, svcErr := a.requireGitPanelService()
+	if svcErr != nil {
+		return "", gpr.NewBindingError(
+			gpr.CodeServiceUnavailable,
+			"Git Panel service indisponivel para operacoes de Pull Request.",
+			"O backend do Git Panel ainda nao foi inicializado.",
+		)
+	}
+
+	preflight, preflightErr := svc.Preflight(normalizedRepoPath)
+	if preflightErr != nil {
+		if bindingErr := gp.AsBindingError(preflightErr); bindingErr != nil {
+			return "", gpr.NewBindingError(
+				gpr.CodeRepoUnavailable,
+				"Repositorio Git invalido para operacoes de Pull Request.",
+				fmt.Sprintf("%s (%s)", strings.TrimSpace(bindingErr.Message), strings.TrimSpace(bindingErr.Code)),
+			)
+		}
+		return "", gpr.NewBindingError(
+			gpr.CodeRepoUnavailable,
+			"Repositorio Git invalido para operacoes de Pull Request.",
+			preflightErr.Error(),
+		)
+	}
+
+	repoRoot := strings.TrimSpace(preflight.RepoRoot)
+	if repoRoot == "" {
+		repoRoot = strings.TrimSpace(preflight.RepoPath)
+	}
+	if repoRoot == "" {
+		repoRoot = filepath.Clean(normalizedRepoPath)
+	}
+
+	return repoRoot, nil
+}
+
+func normalizeGitPanelPRLocalRef(value string, fieldName string, required bool) (string, error) {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		if required {
+			return "", gpr.NewBindingError(
+				gpr.CodeValidationFailed,
+				fmt.Sprintf(`Campo "%s" obrigatorio para criar branch local.`, fieldName),
+				fmt.Sprintf(`Campo "%s" deve ser preenchido.`, fieldName),
+			)
+		}
+		return "", nil
+	}
+
+	if strings.ContainsAny(normalized, " \t\r\n") {
+		return "", gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			fmt.Sprintf(`Campo "%s" invalido para criar branch local.`, fieldName),
+			fmt.Sprintf(`Campo "%s" nao pode conter espacos.`, fieldName),
+		)
+	}
+
+	return normalized, nil
+}
+
+func runGitPanelPRCommand(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitPanelPRLocalBranchTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	rawOut, err := cmd.CombinedOutput()
+	output := strings.TrimSpace(string(rawOut))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if output != "" {
+			return output, context.DeadlineExceeded
+		}
+		return "", context.DeadlineExceeded
+	}
+	return output, err
+}
+
+func ensureGitPanelPRValidBranchName(repoRoot string, branch string) error {
+	output, err := runGitPanelPRCommand(
+		"-C", repoRoot,
+		"check-ref-format",
+		"--branch",
+		branch,
+	)
+	if err == nil {
+		return nil
+	}
+
+	details := strings.TrimSpace(output)
+	if details == "" {
+		details = err.Error()
+	}
+	return gpr.NewBindingError(
+		gpr.CodeValidationFailed,
+		"Nome de branch invalido para criacao local.",
+		details,
+	)
+}
+
+func resolveGitPanelPRLocalStartPoint(repoRoot string, base string) (string, error) {
+	candidates := []string{base}
+	if !strings.HasPrefix(base, "origin/") {
+		candidates = append(candidates, "origin/"+base)
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		_, err := runGitPanelPRCommand(
+			"-C", repoRoot,
+			"rev-parse",
+			"--verify",
+			"--quiet",
+			candidate,
+		)
+		if err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", gpr.NewBindingError(
+		gpr.CodeValidationFailed,
+		"Referencia base nao encontrada para criar branch local.",
+		fmt.Sprintf(`Nao foi possivel resolver a referencia "%s" localmente nem em origin/%s.`, base, base),
+	)
+}
+
+func normalizeGitPanelPRListState(state string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(state))
+	switch normalized {
+	case "", "open":
+		return "open", nil
+	case "closed":
+		return "closed", nil
+	case "all":
+		return "all", nil
+	default:
+		return "", gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Filtro de estado de Pull Request invalido.",
+			`Use "open", "closed" ou "all".`,
+		)
+	}
+}
+
+type normalizedGitPanelPRCreatePayload struct {
+	Input               gh.CreatePRInput
+	ManualOwner         string
+	ManualRepo          string
+	AllowTargetOverride bool
+}
+
+func normalizeGitPanelPRCreatePayload(payload GitPanelPRCreatePayloadDTO) (normalizedGitPanelPRCreatePayload, error) {
+	normalizedTitle := strings.TrimSpace(payload.Title)
+	if normalizedTitle == "" {
+		return normalizedGitPanelPRCreatePayload{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Titulo da Pull Request obrigatorio.",
+			`Campo "title" deve ser preenchido.`,
+		)
+	}
+
+	normalizedHead := strings.TrimSpace(payload.Head)
+	if normalizedHead == "" {
+		return normalizedGitPanelPRCreatePayload{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Branch de origem obrigatoria para criar Pull Request.",
+			`Campo "head" deve ser preenchido.`,
+		)
+	}
+
+	normalizedBase := strings.TrimSpace(payload.Base)
+	if normalizedBase == "" {
+		return normalizedGitPanelPRCreatePayload{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Branch de destino obrigatoria para criar Pull Request.",
+			`Campo "base" deve ser preenchido.`,
+		)
+	}
+
+	input := gh.CreatePRInput{
+		Title:      normalizedTitle,
+		Body:       payload.Body,
+		HeadBranch: normalizedHead,
+		BaseBranch: normalizedBase,
+		IsDraft:    payload.Draft,
+	}
+	if payload.MaintainerCanModify != nil {
+		flag := *payload.MaintainerCanModify
+		input.MaintainerCanModify = &flag
+	}
+
+	normalizedManualOwner := strings.TrimSpace(payload.ManualOwner)
+	normalizedManualRepo := strings.TrimSpace(payload.ManualRepo)
+	hasManualOwner := normalizedManualOwner != ""
+	hasManualRepo := normalizedManualRepo != ""
+	if hasManualOwner != hasManualRepo {
+		return normalizedGitPanelPRCreatePayload{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Destino manual invalido para criar Pull Request.",
+			`Informe "manualOwner" e "manualRepo" juntos quando usar override manual.`,
+		)
+	}
+
+	if hasManualOwner {
+		owner, repo, normalizeErr := gpr.NormalizeOwnerRepo(normalizedManualOwner, normalizedManualRepo)
+		if normalizeErr != nil {
+			return normalizedGitPanelPRCreatePayload{}, gpr.NewBindingError(
+				gpr.CodeManualRepoInvalid,
+				"Destino manual invalido para criar Pull Request.",
+				normalizeErr.Error(),
+			)
+		}
+		normalizedManualOwner = owner
+		normalizedManualRepo = repo
+	}
+
+	return normalizedGitPanelPRCreatePayload{
+		Input:               input,
+		ManualOwner:         normalizedManualOwner,
+		ManualRepo:          normalizedManualRepo,
+		AllowTargetOverride: payload.AllowTargetOverride,
+	}, nil
+}
+
+func normalizeGitPanelPRCreateLabelPayload(payload GitPanelPRCreateLabelPayloadDTO) (gh.CreateLabelInput, error) {
+	normalizedName := strings.TrimSpace(payload.Name)
+	if normalizedName == "" {
+		return gh.CreateLabelInput{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Nome da etiqueta obrigatorio.",
+			`Campo "name" deve ser preenchido.`,
+		)
+	}
+
+	normalizedColor := strings.TrimSpace(payload.Color)
+	if normalizedColor == "" {
+		return gh.CreateLabelInput{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Cor da etiqueta obrigatoria.",
+			`Campo "color" deve ser preenchido com 6 caracteres hexadecimais.`,
+		)
+	}
+	if !gitPanelLabelColorRegex.MatchString(normalizedColor) {
+		return gh.CreateLabelInput{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Cor da etiqueta invalida.",
+			`Campo "color" deve usar formato hexadecimal de 6 caracteres (ex: #0e8a16).`,
+		)
+	}
+
+	normalizedColor = strings.TrimPrefix(normalizedColor, "#")
+	normalizedColor = strings.ToLower(normalizedColor)
+
+	var normalizedDescription *string
+	if payload.Description != nil {
+		description := strings.TrimSpace(*payload.Description)
+		if description != "" {
+			normalizedDescription = &description
+		}
+	}
+
+	return gh.CreateLabelInput{
+		Name:        normalizedName,
+		Color:       normalizedColor,
+		Description: normalizedDescription,
+	}, nil
+}
+
+func normalizeGitPanelPRUpdatePayload(payload GitPanelPRUpdatePayloadDTO) (gh.UpdatePRInput, error) {
+	input := gh.UpdatePRInput{}
+	hasField := false
+
+	if payload.Title != nil {
+		hasField = true
+		normalizedTitle := strings.TrimSpace(*payload.Title)
+		if normalizedTitle == "" {
+			return gh.UpdatePRInput{}, gpr.NewBindingError(
+				gpr.CodeValidationFailed,
+				"Titulo invalido para atualizacao de Pull Request.",
+				`Campo "title" nao pode ser vazio quando informado.`,
+			)
+		}
+		input.Title = &normalizedTitle
+	}
+
+	if payload.Body != nil {
+		hasField = true
+		body := *payload.Body
+		input.Body = &body
+	}
+
+	if payload.State != nil {
+		hasField = true
+		normalizedState := strings.ToLower(strings.TrimSpace(*payload.State))
+		switch normalizedState {
+		case "open", "closed":
+			input.State = &normalizedState
+		default:
+			return gh.UpdatePRInput{}, gpr.NewBindingError(
+				gpr.CodeValidationFailed,
+				"Estado invalido para atualizacao de Pull Request.",
+				`Campo "state" aceita apenas "open" ou "closed".`,
+			)
+		}
+	}
+
+	if payload.Base != nil {
+		hasField = true
+		normalizedBase := strings.TrimSpace(*payload.Base)
+		if normalizedBase == "" {
+			return gh.UpdatePRInput{}, gpr.NewBindingError(
+				gpr.CodeValidationFailed,
+				"Branch base invalida para atualizacao de Pull Request.",
+				`Campo "base" nao pode ser vazio quando informado.`,
+			)
+		}
+		input.BaseBranch = &normalizedBase
+	}
+
+	if payload.MaintainerCanModify != nil {
+		hasField = true
+		flag := *payload.MaintainerCanModify
+		input.MaintainerCanModify = &flag
+	}
+
+	if !hasField {
+		return gh.UpdatePRInput{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Payload de atualizacao de Pull Request vazio.",
+			`Informe ao menos um campo: "title", "body", "state", "base" ou "maintainerCanModify".`,
+		)
+	}
+
+	return input, nil
+}
+
+func normalizeGitPanelOptionalFullSHA(value *string, fieldName string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	normalized := strings.TrimSpace(*value)
+	if normalized == "" {
+		return nil, nil
+	}
+
+	if !gitPanelFullCommitHashRegex.MatchString(normalized) {
+		return nil, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			fmt.Sprintf(`Campo "%s" invalido para operacao de Pull Request.`, fieldName),
+			fmt.Sprintf(`Campo "%s" deve conter um SHA completo de 40 caracteres hexadecimais.`, fieldName),
+		)
+	}
+
+	normalized = strings.ToLower(normalized)
+	return &normalized, nil
+}
+
+func normalizeGitPanelPRMergePayload(payload GitPanelPRMergePayloadDTO) (gh.MergePRInput, error) {
+	normalizedMethod := strings.ToLower(strings.TrimSpace(payload.MergeMethod))
+	switch normalizedMethod {
+	case "", "merge":
+		normalizedMethod = "merge"
+	case "squash":
+		normalizedMethod = "squash"
+	case "rebase":
+		normalizedMethod = "rebase"
+	default:
+		return gh.MergePRInput{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Metodo de merge invalido para Pull Request.",
+			`Campo "mergeMethod" aceita apenas "merge", "squash" ou "rebase".`,
+		)
+	}
+
+	normalizedSHA, shaErr := normalizeGitPanelOptionalFullSHA(payload.SHA, "sha")
+	if shaErr != nil {
+		return gh.MergePRInput{}, shaErr
+	}
+
+	return gh.MergePRInput{
+		MergeMethod: gh.PRMergeMethod(normalizedMethod),
+		SHA:         normalizedSHA,
+	}, nil
+}
+
+func normalizeGitPanelPRUpdateBranchPayload(payload GitPanelPRUpdateBranchPayloadDTO) (gh.UpdatePRBranchInput, error) {
+	normalizedSHA, shaErr := normalizeGitPanelOptionalFullSHA(payload.ExpectedHeadSHA, "expectedHeadSha")
+	if shaErr != nil {
+		return gh.UpdatePRBranchInput{}, shaErr
+	}
+
+	return gh.UpdatePRBranchInput{
+		ExpectedHeadSHA: normalizedSHA,
+	}, nil
+}
+
+func (a *App) emitGitPanelPRMutationRefresh(owner, repo string, prNumber int, action string) {
+	if a == nil || a.ctx == nil {
+		return
+	}
+
+	normalizedOwner := strings.TrimSpace(owner)
+	normalizedRepo := strings.TrimSpace(repo)
+	if normalizedOwner == "" || normalizedRepo == "" {
+		return
+	}
+
+	normalizedAction := strings.ToLower(strings.TrimSpace(action))
+	if normalizedAction == "" {
+		normalizedAction = "updated"
+	}
+
+	runtime.EventsEmit(a.ctx, "github:prs:updated", map[string]interface{}{
+		"owner":  normalizedOwner,
+		"repo":   normalizedRepo,
+		"count":  1,
+		"source": "mutation",
+		"action": normalizedAction,
+		"changes": []map[string]interface{}{{
+			"number":     prNumber,
+			"changeType": normalizedAction,
+		}},
+	})
+}
+
+// GitPanelPRList retorna PRs do repositorio alvo com filtro e paginacao REST.
+func (a *App) GitPanelPRList(repoPath string, state string, page int, perPage int) ([]gh.PullRequest, error) {
+	normalizedState, stateErr := normalizeGitPanelPRListState(state)
+	if stateErr != nil {
+		return nil, stateErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+
+	items, err := githubService.ListPullRequests(owner, repo, gh.PRFilters{
+		State:   normalizedState,
+		Page:    page,
+		PerPage: perPage,
+	})
+	if err != nil {
+		return nil, a.normalizeGitPanelPRError(err)
+	}
+	if items == nil {
+		return []gh.PullRequest{}, nil
+	}
+
+	return items, nil
+}
+
+// GitPanelPRCreate cria um Pull Request no repositorio alvo via GitHub REST.
+func (a *App) GitPanelPRCreate(repoPath string, payload GitPanelPRCreatePayloadDTO) (gh.PullRequest, error) {
+	normalizedPayload, payloadErr := normalizeGitPanelPRCreatePayload(payload)
+	if payloadErr != nil {
+		return gh.PullRequest{}, payloadErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.PullRequest{}, svcErr
+	}
+
+	createInput := normalizedPayload.Input
+	owner := ""
+	repo := ""
+	if normalizedPayload.ManualOwner != "" && normalizedPayload.ManualRepo != "" {
+		target, targetErr := a.GitPanelPRResolveRepository(
+			repoPath,
+			normalizedPayload.ManualOwner,
+			normalizedPayload.ManualRepo,
+			normalizedPayload.AllowTargetOverride,
+		)
+		if targetErr != nil {
+			return gh.PullRequest{}, a.normalizeGitPanelPRError(targetErr)
+		}
+
+		owner = strings.TrimSpace(target.Owner)
+		repo = strings.TrimSpace(target.Repo)
+	} else {
+		var resolveErr error
+		owner, repo, resolveErr = a.resolveGitPanelPROwnerRepo(repoPath)
+		if resolveErr != nil {
+			return gh.PullRequest{}, resolveErr
+		}
+	}
+
+	if owner == "" || repo == "" {
+		return gh.PullRequest{}, gpr.NewBindingError(
+			gpr.CodeRepoResolveFailed,
+			"Nao foi possivel resolver owner/repo para criar Pull Request.",
+			"Revise o repositorio alvo e tente novamente.",
+		)
+	}
+
+	createInput.Owner = owner
+	createInput.Repo = repo
+
+	created, err := githubService.CreatePullRequest(createInput)
+	if err != nil {
+		normalizedErr := a.normalizeGitPanelPRError(err)
+		a.logGitPanelPROperationError("create", owner, repo, 0, normalizedErr)
+		return gh.PullRequest{}, normalizedErr
+	}
+	if created == nil {
+		return gh.PullRequest{}, nil
+	}
+
+	a.emitGitPanelPRMutationRefresh(owner, repo, created.Number, "created")
+	return *created, nil
+}
+
+// GitPanelPRCreateLabel cria uma label de repositorio a partir da aba de PR.
+func (a *App) GitPanelPRCreateLabel(repoPath string, payload GitPanelPRCreateLabelPayloadDTO) (gh.Label, error) {
+	normalizedPayload, payloadErr := normalizeGitPanelPRCreateLabelPayload(payload)
+	if payloadErr != nil {
+		return gh.Label{}, payloadErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.Label{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return gh.Label{}, resolveErr
+	}
+
+	normalizedPayload.Owner = owner
+	normalizedPayload.Repo = repo
+
+	created, err := githubService.CreateLabel(normalizedPayload)
+	if err != nil {
+		normalizedErr := a.normalizeGitPanelPRError(err)
+		a.logGitPanelPROperationError("create_label", owner, repo, 0, normalizedErr)
+		return gh.Label{}, normalizedErr
+	}
+	if created == nil {
+		return gh.Label{}, nil
+	}
+
+	return *created, nil
+}
+
+// GitPanelPRCreateLocalBranch cria e faz checkout de uma branch local sem usar API do GitHub.
+func (a *App) GitPanelPRCreateLocalBranch(repoPath string, branch string, base string) error {
+	repoRoot, repoErr := a.resolveGitPanelPRRepoRoot(repoPath)
+	if repoErr != nil {
+		return repoErr
+	}
+
+	normalizedBranch, branchErr := normalizeGitPanelPRLocalRef(branch, "branch", true)
+	if branchErr != nil {
+		return branchErr
+	}
+
+	normalizedBase, baseErr := normalizeGitPanelPRLocalRef(base, "base", false)
+	if baseErr != nil {
+		return baseErr
+	}
+
+	if validationErr := ensureGitPanelPRValidBranchName(repoRoot, normalizedBranch); validationErr != nil {
+		return validationErr
+	}
+
+	checkoutBase := normalizedBase
+	if checkoutBase != "" {
+		resolvedBase, resolveErr := resolveGitPanelPRLocalStartPoint(repoRoot, checkoutBase)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		checkoutBase = resolvedBase
+	}
+
+	checkoutArgs := []string{"-C", repoRoot, "checkout", "-b", normalizedBranch}
+	if checkoutBase != "" {
+		checkoutArgs = append(checkoutArgs, checkoutBase)
+	}
+
+	output, checkoutErr := runGitPanelPRCommand(checkoutArgs...)
+	if checkoutErr == nil {
+		return nil
+	}
+
+	details := strings.TrimSpace(output)
+	loweredDetails := strings.ToLower(details)
+	if strings.Contains(loweredDetails, "already exists") {
+		switchOutput, switchErr := runGitPanelPRCommand("-C", repoRoot, "checkout", normalizedBranch)
+		if switchErr == nil {
+			return nil
+		}
+		switchDetails := strings.TrimSpace(switchOutput)
+		switch {
+		case details == "" && switchDetails != "":
+			details = switchDetails
+		case details != "" && switchDetails != "":
+			details = details + " | " + switchDetails
+		}
+		checkoutErr = switchErr
+	}
+
+	if details == "" {
+		details = checkoutErr.Error()
+	}
+
+	if errors.Is(checkoutErr, context.DeadlineExceeded) {
+		return gpr.NewBindingError(
+			gpr.CodeUnknown,
+			"Tempo limite excedido ao criar branch local.",
+			details,
+		)
+	}
+
+	return gpr.NewBindingError(
+		gpr.CodeConflict,
+		"Falha ao criar branch local para a Pull Request.",
+		details,
+	)
+}
+
+// GitPanelPRPushLocalBranch publica uma branch local no remote origin com upstream.
+func (a *App) GitPanelPRPushLocalBranch(repoPath string, branch string) error {
+	repoRoot, repoErr := a.resolveGitPanelPRRepoRoot(repoPath)
+	if repoErr != nil {
+		return repoErr
+	}
+
+	normalizedBranch, branchErr := normalizeGitPanelPRLocalRef(branch, "branch", true)
+	if branchErr != nil {
+		return branchErr
+	}
+
+	if validationErr := ensureGitPanelPRValidBranchName(repoRoot, normalizedBranch); validationErr != nil {
+		return validationErr
+	}
+
+	_, localLookupErr := runGitPanelPRCommand(
+		"-C", repoRoot,
+		"rev-parse",
+		"--verify",
+		"--quiet",
+		"refs/heads/"+normalizedBranch,
+	)
+	if localLookupErr != nil {
+		return gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Branch local nao encontrada para publicacao.",
+			fmt.Sprintf(`Crie a branch "%s" localmente antes de publicar no origin.`, normalizedBranch),
+		)
+	}
+
+	pushOutput, pushErr := runGitPanelPRCommand(
+		"-C", repoRoot,
+		"push",
+		"-u",
+		"origin",
+		normalizedBranch,
+	)
+	if pushErr == nil {
+		return nil
+	}
+
+	details := strings.TrimSpace(pushOutput)
+	if details == "" {
+		details = pushErr.Error()
+	}
+
+	if errors.Is(pushErr, context.DeadlineExceeded) {
+		return gpr.NewBindingError(
+			gpr.CodeUnknown,
+			"Tempo limite excedido ao publicar branch local no origin.",
+			details,
+		)
+	}
+
+	return gpr.NewBindingError(
+		gpr.CodeConflict,
+		"Falha ao publicar branch local no origin.",
+		details,
+	)
+}
+
+// GitPanelPRUpdate atualiza um Pull Request existente no repositorio alvo via GitHub REST.
+func (a *App) GitPanelPRUpdate(repoPath string, prNumber int, payload GitPanelPRUpdatePayloadDTO) (gh.PullRequest, error) {
+	if prNumber <= 0 {
+		return gh.PullRequest{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	updateInput, payloadErr := normalizeGitPanelPRUpdatePayload(payload)
+	if payloadErr != nil {
+		return gh.PullRequest{}, payloadErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.PullRequest{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return gh.PullRequest{}, resolveErr
+	}
+
+	updateInput.Owner = owner
+	updateInput.Repo = repo
+	updateInput.Number = prNumber
+
+	updated, err := githubService.UpdatePullRequest(updateInput)
+	if err != nil {
+		normalizedErr := a.normalizeGitPanelPRError(err)
+		a.logGitPanelPROperationError("update", owner, repo, prNumber, normalizedErr)
+		return gh.PullRequest{}, normalizedErr
+	}
+	if updated == nil {
+		return gh.PullRequest{}, nil
+	}
+
+	a.emitGitPanelPRMutationRefresh(owner, repo, updated.Number, "updated")
+	return *updated, nil
+}
+
+// GitPanelPRCheckMerged verifica se a PR alvo ja foi mergeada.
+func (a *App) GitPanelPRCheckMerged(repoPath string, prNumber int) (bool, error) {
+	if prNumber <= 0 {
+		return false, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return false, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return false, resolveErr
+	}
+
+	merged, err := githubService.CheckPullRequestMerged(owner, repo, prNumber)
+	if err != nil {
+		return false, a.normalizeGitPanelPRError(err)
+	}
+
+	return merged, nil
+}
+
+// GitPanelPRMerge executa merge de PR no repositorio alvo via GitHub REST.
+func (a *App) GitPanelPRMerge(repoPath string, prNumber int, payload GitPanelPRMergePayloadDTO) (GitPanelPRMergeResultDTO, error) {
+	if prNumber <= 0 {
+		return GitPanelPRMergeResultDTO{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	mergeInput, payloadErr := normalizeGitPanelPRMergePayload(payload)
+	if payloadErr != nil {
+		return GitPanelPRMergeResultDTO{}, payloadErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return GitPanelPRMergeResultDTO{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return GitPanelPRMergeResultDTO{}, resolveErr
+	}
+
+	mergeInput.Owner = owner
+	mergeInput.Repo = repo
+	mergeInput.Number = prNumber
+
+	result, err := githubService.MergePullRequestREST(mergeInput)
+	if err != nil {
+		normalizedErr := a.normalizeGitPanelPRError(err)
+		a.logGitPanelPROperationError("merge", owner, repo, prNumber, normalizedErr)
+		return GitPanelPRMergeResultDTO{}, normalizedErr
+	}
+	if result == nil {
+		return GitPanelPRMergeResultDTO{}, nil
+	}
+
+	return GitPanelPRMergeResultDTO{
+		SHA:     strings.TrimSpace(result.SHA),
+		Merged:  result.Merged,
+		Message: strings.TrimSpace(result.Message),
+	}, nil
+}
+
+// GitPanelPRUpdateBranch solicita update da branch da PR alvo via GitHub REST.
+func (a *App) GitPanelPRUpdateBranch(repoPath string, prNumber int, payload GitPanelPRUpdateBranchPayloadDTO) (GitPanelPRUpdateBranchResultDTO, error) {
+	if prNumber <= 0 {
+		return GitPanelPRUpdateBranchResultDTO{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	updateInput, payloadErr := normalizeGitPanelPRUpdateBranchPayload(payload)
+	if payloadErr != nil {
+		return GitPanelPRUpdateBranchResultDTO{}, payloadErr
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return GitPanelPRUpdateBranchResultDTO{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return GitPanelPRUpdateBranchResultDTO{}, resolveErr
+	}
+
+	updateInput.Owner = owner
+	updateInput.Repo = repo
+	updateInput.Number = prNumber
+
+	result, err := githubService.UpdatePullRequestBranch(updateInput)
+	if err != nil {
+		normalizedErr := a.normalizeGitPanelPRError(err)
+		a.logGitPanelPROperationError("update_branch", owner, repo, prNumber, normalizedErr)
+		return GitPanelPRUpdateBranchResultDTO{}, normalizedErr
+	}
+	if result == nil {
+		return GitPanelPRUpdateBranchResultDTO{}, nil
+	}
+
+	return GitPanelPRUpdateBranchResultDTO{
+		Message: strings.TrimSpace(result.Message),
+	}, nil
+}
+
+// GitPanelPRGet retorna detalhes do Pull Request alvo.
+func (a *App) GitPanelPRGet(repoPath string, prNumber int) (gh.PullRequest, error) {
+	if prNumber <= 0 {
+		return gh.PullRequest{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.PullRequest{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return gh.PullRequest{}, resolveErr
+	}
+
+	pr, err := githubService.GetPullRequest(owner, repo, prNumber)
+	if err != nil {
+		return gh.PullRequest{}, a.normalizeGitPanelPRError(err)
+	}
+	if pr == nil {
+		return gh.PullRequest{}, nil
+	}
+
+	return *pr, nil
+}
+
+// GitPanelPRGetCommits retorna commits paginados da PR alvo.
+func (a *App) GitPanelPRGetCommits(repoPath string, prNumber int, page int, perPage int) (gh.PRCommitPage, error) {
+	if prNumber <= 0 {
+		return gh.PRCommitPage{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.PRCommitPage{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return gh.PRCommitPage{}, resolveErr
+	}
+
+	pageResult, err := githubService.GetPullRequestCommits(owner, repo, prNumber, page, perPage)
+	if err != nil {
+		return gh.PRCommitPage{}, a.normalizeGitPanelPRError(err)
+	}
+	if pageResult == nil {
+		return gh.PRCommitPage{}, nil
+	}
+
+	return *pageResult, nil
+}
+
+// GitPanelPRGetFiles retorna arquivos paginados da PR alvo.
+func (a *App) GitPanelPRGetFiles(repoPath string, prNumber int, page int, perPage int) (gh.PRFilePage, error) {
+	if prNumber <= 0 {
+		return gh.PRFilePage{}, gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return gh.PRFilePage{}, svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return gh.PRFilePage{}, resolveErr
+	}
+
+	pageResult, err := githubService.GetPullRequestFiles(owner, repo, prNumber, page, perPage)
+	if err != nil {
+		return gh.PRFilePage{}, a.normalizeGitPanelPRError(err)
+	}
+	if pageResult == nil {
+		return gh.PRFilePage{}, nil
+	}
+
+	return *pageResult, nil
+}
+
+// GitPanelPRGetRawDiff retorna diff completo bruto da PR alvo sob demanda.
+func (a *App) GitPanelPRGetRawDiff(repoPath string, prNumber int) (string, error) {
+	if prNumber <= 0 {
+		return "", gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return "", svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+
+	rawDiff, err := githubService.GetPullRequestRawDiff(owner, repo, prNumber)
+	if err != nil {
+		return "", a.normalizeGitPanelPRError(err)
+	}
+
+	return rawDiff, nil
+}
+
+// GitPanelPRGetCommitRawDiff retorna diff bruto de um commit especifico da PR alvo.
+func (a *App) GitPanelPRGetCommitRawDiff(repoPath string, prNumber int, commitSHA string) (string, error) {
+	if prNumber <= 0 {
+		return "", gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Numero de Pull Request invalido.",
+			"Informe um numero de PR maior que zero.",
+		)
+	}
+
+	normalizedSHA := strings.TrimSpace(commitSHA)
+	if normalizedSHA == "" {
+		return "", gpr.NewBindingError(
+			gpr.CodeValidationFailed,
+			"Commit SHA invalido.",
+			"Informe um commit SHA valido para carregar o diff.",
+		)
+	}
+
+	githubService, svcErr := a.requireGitHubServiceForPRs()
+	if svcErr != nil {
+		return "", svcErr
+	}
+
+	owner, repo, resolveErr := a.resolveGitPanelPROwnerRepo(repoPath)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+
+	rawDiff, err := githubService.GetCommitRawDiff(owner, repo, normalizedSHA)
+	if err != nil {
+		return "", a.normalizeGitPanelPRError(err)
+	}
+
+	return rawDiff, nil
+}
+
 // GitPanelPickRepositoryDirectory abre o seletor nativo para escolher diretório do repositório.
 func (a *App) GitPanelPickRepositoryDirectory(defaultPath string) (string, error) {
 	if a.ctx == nil {
@@ -3213,7 +4509,7 @@ func (a *App) resolveGitHubOwnerRepo(repoRoot string) (string, string, bool) {
 		return "", "", false
 	}
 
-	owner, repo, ok := parseGitHubOriginURL(string(originOutput))
+	owner, repo, ok := gpr.ParseGitHubRemoteURL(string(originOutput))
 	a.gitPanelAuthorMu.Lock()
 	if ok {
 		a.gitPanelRepoIdentity[normalizedRoot] = gitPanelRepoIdentityCacheEntry{
@@ -3229,46 +4525,6 @@ func (a *App) resolveGitHubOwnerRepo(repoRoot string) (string, string, bool) {
 	a.gitPanelAuthorMu.Unlock()
 
 	return owner, repo, ok
-}
-
-func parseGitHubOriginURL(raw string) (string, string, bool) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", "", false
-	}
-
-	if strings.HasPrefix(trimmed, "git@github.com:") {
-		return splitGitHubOwnerRepo(strings.TrimPrefix(trimmed, "git@github.com:"))
-	}
-
-	parsedURL, err := url.Parse(trimmed)
-	if err != nil {
-		return "", "", false
-	}
-
-	host := strings.ToLower(strings.TrimSpace(parsedURL.Hostname()))
-	if host != "github.com" {
-		return "", "", false
-	}
-
-	return splitGitHubOwnerRepo(strings.TrimPrefix(parsedURL.Path, "/"))
-}
-
-func splitGitHubOwnerRepo(pathValue string) (string, string, bool) {
-	trimmedPath := strings.TrimSpace(strings.TrimSuffix(pathValue, ".git"))
-	trimmedPath = strings.TrimPrefix(trimmedPath, "/")
-	segments := strings.Split(trimmedPath, "/")
-	if len(segments) < 2 {
-		return "", "", false
-	}
-
-	owner := strings.TrimSpace(segments[0])
-	repo := strings.TrimSpace(segments[1])
-	if owner == "" || repo == "" {
-		return "", "", false
-	}
-
-	return owner, repo, true
 }
 
 func normalizeGitPanelCommitHash(value string) string {
@@ -3323,6 +4579,32 @@ func (a *App) GitPanelGetDiff(repoPath string, filePath string, mode string, con
 	result, diffErr := svc.GetDiff(repoPath, filePath, mode, contextLines)
 	if diffErr != nil {
 		return gp.DiffDTO{}, a.normalizeGitPanelBindingError(diffErr)
+	}
+	return result, nil
+}
+
+// GitPanelGetCommitDetails retorna detalhes de um commit específico (ex: lista de arquivos).
+func (a *App) GitPanelGetCommitDetails(repoPath string, commitHash string) (gp.CommitDetailsDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.CommitDetailsDTO{}, err
+	}
+	result, err := svc.GetCommitDetails(repoPath, commitHash)
+	if err != nil {
+		return gp.CommitDetailsDTO{}, a.normalizeGitPanelBindingError(err)
+	}
+	return result, nil
+}
+
+// GitPanelGetCommitDiff retorna diff textual de um arquivo em um commit específico.
+func (a *App) GitPanelGetCommitDiff(repoPath string, filePath string, commitHash string, contextLines int) (gp.DiffDTO, error) {
+	svc, err := a.requireGitPanelService()
+	if err != nil {
+		return gp.DiffDTO{}, err
+	}
+	result, err := svc.GetCommitDiff(repoPath, filePath, commitHash, contextLines)
+	if err != nil {
+		return gp.DiffDTO{}, a.normalizeGitPanelBindingError(err)
 	}
 	return result, nil
 }

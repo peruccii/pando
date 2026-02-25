@@ -735,6 +735,7 @@ export namespace github {
 	export class Label {
 	    name: string;
 	    color: string;
+	    description?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Label(source);
@@ -744,6 +745,7 @@ export namespace github {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.color = source["color"];
+	        this.description = source["description"];
 	    }
 	}
 	export class Issue {
@@ -797,6 +799,174 @@ export namespace github {
 		}
 	}
 	
+	export class PRCommit {
+	    sha: string;
+	    message: string;
+	    htmlUrl?: string;
+	    authorName?: string;
+	    authorEmail?: string;
+	    // Go type: time
+	    authoredAt?: any;
+	    committerName?: string;
+	    committerEmail?: string;
+	    // Go type: time
+	    committedAt?: any;
+	    author?: User;
+	    committer?: User;
+	    parentShas?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PRCommit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.message = source["message"];
+	        this.htmlUrl = source["htmlUrl"];
+	        this.authorName = source["authorName"];
+	        this.authorEmail = source["authorEmail"];
+	        this.authoredAt = this.convertValues(source["authoredAt"], null);
+	        this.committerName = source["committerName"];
+	        this.committerEmail = source["committerEmail"];
+	        this.committedAt = this.convertValues(source["committedAt"], null);
+	        this.author = this.convertValues(source["author"], User);
+	        this.committer = this.convertValues(source["committer"], User);
+	        this.parentShas = source["parentShas"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PRCommitPage {
+	    items: PRCommit[];
+	    page: number;
+	    perPage: number;
+	    hasNextPage: boolean;
+	    nextPage?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PRCommitPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], PRCommit);
+	        this.page = source["page"];
+	        this.perPage = source["perPage"];
+	        this.hasNextPage = source["hasNextPage"];
+	        this.nextPage = source["nextPage"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PRFile {
+	    filename: string;
+	    previousFilename?: string;
+	    status: string;
+	    additions: number;
+	    deletions: number;
+	    changes: number;
+	    blobUrl?: string;
+	    rawUrl?: string;
+	    contentsUrl?: string;
+	    patch?: string;
+	    hasPatch: boolean;
+	    patchState: string;
+	    isBinary: boolean;
+	    isPatchTruncated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PRFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.previousFilename = source["previousFilename"];
+	        this.status = source["status"];
+	        this.additions = source["additions"];
+	        this.deletions = source["deletions"];
+	        this.changes = source["changes"];
+	        this.blobUrl = source["blobUrl"];
+	        this.rawUrl = source["rawUrl"];
+	        this.contentsUrl = source["contentsUrl"];
+	        this.patch = source["patch"];
+	        this.hasPatch = source["hasPatch"];
+	        this.patchState = source["patchState"];
+	        this.isBinary = source["isBinary"];
+	        this.isPatchTruncated = source["isPatchTruncated"];
+	    }
+	}
+	export class PRFilePage {
+	    items: PRFile[];
+	    page: number;
+	    perPage: number;
+	    hasNextPage: boolean;
+	    nextPage?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PRFilePage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], PRFile);
+	        this.page = source["page"];
+	        this.perPage = source["perPage"];
+	        this.hasNextPage = source["hasNextPage"];
+	        this.nextPage = source["nextPage"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PullRequest {
 	    id: string;
 	    number: number;
@@ -817,6 +987,7 @@ export namespace github {
 	    deletions: number;
 	    changedFiles: number;
 	    isDraft: boolean;
+	    maintainerCanModify?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PullRequest(source);
@@ -841,6 +1012,7 @@ export namespace github {
 	        this.deletions = source["deletions"];
 	        this.changedFiles = source["changedFiles"];
 	        this.isDraft = source["isDraft"];
+	        this.maintainerCanModify = source["maintainerCanModify"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -984,6 +1156,53 @@ export namespace github {
 }
 
 export namespace gitpanel {
+	
+	export class CommitFileDTO {
+	    path: string;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitFileDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.status = source["status"];
+	    }
+	}
+	export class CommitDetailsDTO {
+	    hash: string;
+	    files: CommitFileDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitDetailsDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hash = source["hash"];
+	        this.files = this.convertValues(source["files"], CommitFileDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class ConflictFileDTO {
 	    path: string;
@@ -1291,6 +1510,154 @@ export namespace gitpanel {
 
 export namespace main {
 	
+	export class GitPanelPRCreateLabelPayloadDTO {
+	    name: string;
+	    color: string;
+	    description?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRCreateLabelPayloadDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.color = source["color"];
+	        this.description = source["description"];
+	    }
+	}
+	export class GitPanelPRCreatePayloadDTO {
+	    title: string;
+	    head: string;
+	    base: string;
+	    body?: string;
+	    draft?: boolean;
+	    maintainerCanModify?: boolean;
+	    manualOwner?: string;
+	    manualRepo?: string;
+	    allowTargetOverride?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRCreatePayloadDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.head = source["head"];
+	        this.base = source["base"];
+	        this.body = source["body"];
+	        this.draft = source["draft"];
+	        this.maintainerCanModify = source["maintainerCanModify"];
+	        this.manualOwner = source["manualOwner"];
+	        this.manualRepo = source["manualRepo"];
+	        this.allowTargetOverride = source["allowTargetOverride"];
+	    }
+	}
+	export class GitPanelPRMergePayloadDTO {
+	    mergeMethod?: string;
+	    sha?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRMergePayloadDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mergeMethod = source["mergeMethod"];
+	        this.sha = source["sha"];
+	    }
+	}
+	export class GitPanelPRMergeResultDTO {
+	    sha?: string;
+	    merged: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRMergeResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.merged = source["merged"];
+	        this.message = source["message"];
+	    }
+	}
+	export class GitPanelPRRepositoryTargetDTO {
+	    repoPath: string;
+	    repoRoot: string;
+	    owner: string;
+	    repo: string;
+	    source: string;
+	    originOwner?: string;
+	    originRepo?: string;
+	    manualOwner?: string;
+	    manualRepo?: string;
+	    overrideConfirmed?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRRepositoryTargetDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.repoPath = source["repoPath"];
+	        this.repoRoot = source["repoRoot"];
+	        this.owner = source["owner"];
+	        this.repo = source["repo"];
+	        this.source = source["source"];
+	        this.originOwner = source["originOwner"];
+	        this.originRepo = source["originRepo"];
+	        this.manualOwner = source["manualOwner"];
+	        this.manualRepo = source["manualRepo"];
+	        this.overrideConfirmed = source["overrideConfirmed"];
+	    }
+	}
+	export class GitPanelPRUpdateBranchPayloadDTO {
+	    expectedHeadSha?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRUpdateBranchPayloadDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.expectedHeadSha = source["expectedHeadSha"];
+	    }
+	}
+	export class GitPanelPRUpdateBranchResultDTO {
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRUpdateBranchResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.message = source["message"];
+	    }
+	}
+	export class GitPanelPRUpdatePayloadDTO {
+	    title?: string;
+	    body?: string;
+	    state?: string;
+	    base?: string;
+	    maintainerCanModify?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelPRUpdatePayloadDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.body = source["body"];
+	        this.state = source["state"];
+	        this.base = source["base"];
+	        this.maintainerCanModify = source["maintainerCanModify"];
+	    }
+	}
 	export class HydrationPayload {
 	    isAuthenticated: boolean;
 	    user?: auth.User;

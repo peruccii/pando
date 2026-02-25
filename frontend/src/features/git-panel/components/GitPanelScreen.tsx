@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { BundledLanguage, BundledTheme } from 'shiki'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -9,8 +10,10 @@ import {
   FolderOpen,
   GitBranch,
   GitMerge,
+  GitPullRequest,
   History,
   Loader2,
+  Palette,
   Plus,
   Search,
   ShieldAlert,
@@ -20,6 +23,8 @@ import {
   GitPanelAcceptOurs,
   GitPanelAcceptTheirs,
   GitPanelGetDiff,
+  GitPanelGetCommitDetails,
+  GitPanelGetCommitDiff,
   GitPanelGetHistory,
   GitPanelOpenExternalMergeTool,
   GitPanelPickRepositoryDirectory,
@@ -29,7 +34,10 @@ import {
   GitPanelStagePatch,
   GitPanelUnstageFile,
 } from '../../../../wailsjs/go/main/App'
+import { gitpanel } from '../../../../wailsjs/go/models'
 import { useWorkspaceStore } from '../../../stores/workspaceStore'
+import { ReactAICodeBlock } from './ReactAICodeBlock'
+import { GitPanelPRView } from './GitPanelPRView'
 import './GitPanelScreen.css'
 import commitHorizontalIconSVG from '../assets/svg/git-commit-horizontal.svg?raw'
 
@@ -153,7 +161,7 @@ interface GitPanelDiffDTO {
 interface DiffCandidate {
   path: string
   status: string
-  bucket: 'staged' | 'unstaged' | 'conflicted'
+  bucket: 'staged' | 'unstaged' | 'conflicted' | 'commit'
 }
 
 interface QuickRefItem {
@@ -167,6 +175,7 @@ interface QuickRefItem {
 type InspectorTab = 'working-tree' | 'commit' | 'diff' | 'conflicts'
 type DiffViewMode = 'unified' | 'split'
 type GitPanelFocusScope = 'sidebar' | 'log' | 'inspector' | 'actions'
+type GitPanelViewMode = 'local' | 'prs'
 
 type VirtualHistoryRow =
   | { kind: 'item'; index: number; item: GitPanelHistoryItem }
@@ -176,6 +185,73 @@ const HISTORY_PAGE_SIZE = 200
 const HISTORY_ROW_HEIGHT = 92
 const HISTORY_OVERSCAN = 8
 const HISTORY_LOAD_MORE_THRESHOLD = HISTORY_ROW_HEIGHT * 10
+const MAX_SHIKI_HIGHLIGHT_LINES = 2500
+const SHIKI_THEME_OPTIONS: Array<{ id: BundledTheme; label: string }> = [
+  { id: 'andromeeda', label: 'Andromeeda' },
+  { id: 'aurora-x', label: 'Aurora X' },
+  { id: 'ayu-dark', label: 'Ayu Dark' },
+  { id: 'ayu-light', label: 'Ayu Light' },
+  { id: 'ayu-mirage', label: 'Ayu Mirage' },
+  { id: 'catppuccin-frappe', label: 'Catppuccin Frappe' },
+  { id: 'catppuccin-latte', label: 'Catppuccin Latte' },
+  { id: 'catppuccin-macchiato', label: 'Catppuccin Macchiato' },
+  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
+  { id: 'dark-plus', label: 'Dark Plus' },
+  { id: 'dracula', label: 'Dracula' },
+  { id: 'dracula-soft', label: 'Dracula Soft' },
+  { id: 'everforest-dark', label: 'Everforest Dark' },
+  { id: 'everforest-light', label: 'Everforest Light' },
+  { id: 'github-dark', label: 'GitHub Dark' },
+  { id: 'github-dark-default', label: 'GitHub Dark Default' },
+  { id: 'github-dark-dimmed', label: 'GitHub Dark Dimmed' },
+  { id: 'github-dark-high-contrast', label: 'GitHub Dark High Contrast' },
+  { id: 'github-light', label: 'GitHub Light' },
+  { id: 'github-light-default', label: 'GitHub Light Default' },
+  { id: 'github-light-high-contrast', label: 'GitHub Light High Contrast' },
+  { id: 'gruvbox-dark-hard', label: 'Gruvbox Dark Hard' },
+  { id: 'gruvbox-dark-medium', label: 'Gruvbox Dark Medium' },
+  { id: 'gruvbox-dark-soft', label: 'Gruvbox Dark Soft' },
+  { id: 'gruvbox-light-hard', label: 'Gruvbox Light Hard' },
+  { id: 'gruvbox-light-medium', label: 'Gruvbox Light Medium' },
+  { id: 'gruvbox-light-soft', label: 'Gruvbox Light Soft' },
+  { id: 'horizon', label: 'Horizon' },
+  { id: 'houston', label: 'Houston' },
+  { id: 'kanagawa-dragon', label: 'Kanagawa Dragon' },
+  { id: 'kanagawa-lotus', label: 'Kanagawa Lotus' },
+  { id: 'kanagawa-wave', label: 'Kanagawa Wave' },
+  { id: 'laserwave', label: 'LaserWave' },
+  { id: 'light-plus', label: 'Light Plus' },
+  { id: 'material-theme', label: 'Material Theme' },
+  { id: 'material-theme-darker', label: 'Material Theme Darker' },
+  { id: 'material-theme-lighter', label: 'Material Theme Lighter' },
+  { id: 'material-theme-ocean', label: 'Material Theme Ocean' },
+  { id: 'material-theme-palenight', label: 'Material Theme Palenight' },
+  { id: 'min-dark', label: 'Min Dark' },
+  { id: 'min-light', label: 'Min Light' },
+  { id: 'monokai', label: 'Monokai' },
+  { id: 'night-owl', label: 'Night Owl' },
+  { id: 'night-owl-light', label: 'Night Owl Light' },
+  { id: 'nord', label: 'Nord' },
+  { id: 'one-dark-pro', label: 'One Dark Pro' },
+  { id: 'one-light', label: 'One Light' },
+  { id: 'plastic', label: 'Plastic' },
+  { id: 'poimandres', label: 'Poimandres' },
+  { id: 'red', label: 'Red' },
+  { id: 'rose-pine', label: 'Rose Pine' },
+  { id: 'rose-pine-dawn', label: 'Rose Pine Dawn' },
+  { id: 'rose-pine-moon', label: 'Rose Pine Moon' },
+  { id: 'slack-dark', label: 'Slack Dark' },
+  { id: 'slack-ochin', label: 'Slack Ochin' },
+  { id: 'snazzy-light', label: 'Snazzy Light' },
+  { id: 'solarized-dark', label: 'Solarized Dark' },
+  { id: 'solarized-light', label: 'Solarized Light' },
+  { id: 'synthwave-84', label: "Synthwave '84" },
+  { id: 'tokyo-night', label: 'Tokyo Night' },
+  { id: 'vesper', label: 'Vesper' },
+  { id: 'vitesse-black', label: 'Vitesse Black' },
+  { id: 'vitesse-dark', label: 'Vitesse Dark' },
+  { id: 'vitesse-light', label: 'Vitesse Light' },
+]
 
 /**
  * GitPanelScreen — host dedicado do Git Panel, fora do mosaico de terminais.
@@ -201,11 +277,16 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
   const [historyCursor, setHistoryCursor] = useState('')
   const [historyHasMore, setHistoryHasMore] = useState(false)
   const [selectedCommitHash, setSelectedCommitHash] = useState('')
+  const [selectedCommitFiles, setSelectedCommitFiles] = useState<gitpanel.CommitFileDTO[]>([])
+  const [isSelectedCommitLoading, setIsSelectedCommitLoading] = useState(false)
   const [selectedRefID, setSelectedRefID] = useState('')
   const [selectedDiffPath, setSelectedDiffPath] = useState('')
   const [activeInspectorTab, setActiveInspectorTab] = useState<InspectorTab>('working-tree')
+  const [activeViewMode, setActiveViewMode] = useState<GitPanelViewMode>('local')
   const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>('unified')
   const [diffData, setDiffData] = useState<GitPanelDiffDTO | null>(null)
+  const [diffHighlightedLines, setDiffHighlightedLines] = useState<Record<string, string>>({})
+  const [shikiTheme, setShikiTheme] = useState<BundledTheme>('one-dark-pro')
   const [isDiffLoading, setIsDiffLoading] = useState(false)
   const [diffError, setDiffError] = useState<GitPanelBindingError | null>(null)
   const [isInitialLoading, setIsInitialLoading] = useState(false)
@@ -325,7 +406,10 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     [historyItems, selectedCommitHash],
   )
 
-  const diffCandidates = useMemo(() => buildDiffCandidates(status), [status])
+  const diffCandidates = useMemo(
+    () => buildDiffCandidates(status, selectedCommitFiles, activeInspectorTab, selectedCommitHash),
+    [status, selectedCommitFiles, activeInspectorTab, selectedCommitHash]
+  )
 
   const selectedDiffFile = useMemo(() => {
     if (!diffData?.files || diffData.files.length === 0) {
@@ -334,6 +418,81 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
 
     return diffData.files.find((file) => file.path === selectedDiffPath) ?? diffData.files[0]
   }, [diffData, selectedDiffPath])
+  const activeShikiThemeLabel = useMemo(() => {
+    return SHIKI_THEME_OPTIONS.find((option) => option.id === shikiTheme)?.label ?? shikiTheme
+  }, [shikiTheme])
+  const cycleShikiTheme = useCallback(() => {
+    setShikiTheme((previous) => {
+      const currentIndex = SHIKI_THEME_OPTIONS.findIndex((option) => option.id === previous)
+      if (currentIndex < 0) {
+        return SHIKI_THEME_OPTIONS[0]?.id ?? 'one-dark-pro'
+      }
+      const nextIndex = (currentIndex + 1) % SHIKI_THEME_OPTIONS.length
+      return SHIKI_THEME_OPTIONS[nextIndex]?.id ?? previous
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const language = resolveShikiLanguageFromPath(selectedDiffFile?.path ?? '')
+    if (!selectedDiffFile || !language || selectedDiffFile.hunks.length === 0) {
+      setDiffHighlightedLines({})
+      return () => { cancelled = true }
+    }
+
+    const highlightableEntries: Array<{ key: string; content: string }> = []
+    for (let hunkIndex = 0; hunkIndex < selectedDiffFile.hunks.length; hunkIndex += 1) {
+      const hunk = selectedDiffFile.hunks[hunkIndex]
+      for (let lineIndex = 0; lineIndex < hunk.lines.length; lineIndex += 1) {
+        const line = hunk.lines[lineIndex]
+        if (line.type === 'meta') {
+          continue
+        }
+        highlightableEntries.push({
+          key: `${hunkIndex}:${lineIndex}`,
+          content: line.content || ' ',
+        })
+      }
+    }
+
+    if (highlightableEntries.length === 0 || highlightableEntries.length > MAX_SHIKI_HIGHLIGHT_LINES) {
+      setDiffHighlightedLines({})
+      return () => { cancelled = true }
+    }
+
+    void (async () => {
+      try {
+        const highlighted = await highlightLinesWithShiki(
+          highlightableEntries.map((entry) => entry.content),
+          language,
+          shikiTheme,
+        )
+
+        if (cancelled) {
+          return
+        }
+
+        const next: Record<string, string> = {}
+        for (let index = 0; index < highlightableEntries.length; index += 1) {
+          const entry = highlightableEntries[index]
+          const highlightedLine = highlighted[index]
+          next[entry.key] = highlightedLine && highlightedLine.trim() !== ''
+            ? highlightedLine
+            : escapeHtml(entry.content || ' ')
+        }
+        setDiffHighlightedLines(next)
+      } catch {
+        if (!cancelled) {
+          setDiffHighlightedLines({})
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedDiffFile, shikiTheme])
 
   const branchName = status?.branch || preflight?.branch || 'Detached/Unknown'
 
@@ -387,6 +546,24 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
       return quickRefs[0].id
     })
   }, [quickRefs])
+
+  useEffect(() => {
+    if (!selectedCommitHash || !resolvedRepoPath) {
+      setSelectedCommitFiles([])
+      return
+    }
+
+    setIsSelectedCommitLoading(true)
+    GitPanelGetCommitDetails(resolvedRepoPath, selectedCommitHash)
+      .then((details) => {
+        setSelectedCommitFiles(details.files || [])
+      })
+      .catch((err) => {
+        console.error('Failed to load commit details:', err)
+        setSelectedCommitFiles([])
+      })
+      .finally(() => setIsSelectedCommitLoading(false))
+  }, [selectedCommitHash, resolvedRepoPath])
 
   useEffect(() => {
     if (diffCandidates.length === 0) {
@@ -567,7 +744,14 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     setIsDiffLoading(true)
     setDiffError(null)
 
-    GitPanelGetDiff(repoPath, filePath, 'unified', diffContextLines)
+    let promise: Promise<GitPanelDiffDTO>
+    if (selectedCommitHash && (activeInspectorTab === 'commit' || activeInspectorTab === 'diff')) {
+      promise = GitPanelGetCommitDiff(repoPath, filePath, selectedCommitHash, diffContextLines) as unknown as Promise<GitPanelDiffDTO>
+    } else {
+      promise = GitPanelGetDiff(repoPath, filePath, 'unified', diffContextLines) as unknown as Promise<GitPanelDiffDTO>
+    }
+
+    promise
       .then((rawResult) => {
         if (diffRequestTokenRef.current !== requestToken) {
           return
@@ -586,7 +770,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
           setIsDiffLoading(false)
         }
       })
-  }, [resolvedRepoPath, selectedDiffPath])
+  }, [resolvedRepoPath, selectedDiffPath, activeInspectorTab, selectedCommitHash])
 
   const totalVirtualRows = historyItems.length + (isHistoryLoadingMore ? 1 : 0)
   const totalVirtualHeight = totalVirtualRows * HISTORY_ROW_HEIGHT
@@ -659,7 +843,6 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     setSelectedRefID(ref.id)
     if (ref.kind === 'commit' && ref.commitHash) {
       setSelectedCommitHash(ref.commitHash)
-      setActiveInspectorTab('commit')
     }
   }, [])
 
@@ -727,7 +910,6 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     }
 
     setSelectedCommitHash(nextCommit.hash)
-    setActiveInspectorTab('commit')
     requestAnimationFrame(() => {
       const row = document.querySelector<HTMLButtonElement>(`[data-commit-hash="${nextCommit.hash}"]`)
       row?.focus({ preventScroll: true })
@@ -784,6 +966,10 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
   }, [])
 
   useEffect(() => {
+    if (activeViewMode !== 'local') {
+      return
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableElement(event.target)) {
         return
@@ -856,6 +1042,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
+    activeViewMode,
     selectedDiffPath,
     onBack,
     focusScope,
@@ -1174,7 +1361,12 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
         <div className="git-panel-tab-content">
           <div className="git-panel-card git-panel-card--fill">
             <h2>Commit selecionado</h2>
-            {selectedCommit ? (
+            {isSelectedCommitLoading ? (
+               <div className="git-panel-inspector__commit">
+                 <Loader2 size={16} className="git-panel-log__spinner" />
+                 <span style={{ marginLeft: 8 }}>Carregando detalhes...</span>
+               </div>
+            ) : selectedCommit ? (
               <div className="git-panel-inspector__commit">
                 <p className="git-panel-inspector__subject">{selectedCommit.subject || '(sem subject)'}</p>
                 <p><strong>Hash:</strong> <code>{selectedCommit.hash}</code></p>
@@ -1230,6 +1422,34 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
               >
                 Split
               </button>
+            </div>
+
+            <div className="git-panel-diff__field git-panel-diff__field--theme">
+              <label htmlFor="git-panel-diff-theme">Tema Shiki</label>
+              <div className="git-panel-diff__theme-picker">
+                <select
+                  id="git-panel-diff-theme"
+                  className="git-panel-diff__theme-select"
+                  value={shikiTheme}
+                  onChange={(event) => setShikiTheme(event.target.value as BundledTheme)}
+                >
+                  {SHIKI_THEME_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="git-panel-diff__theme-btn"
+                  onClick={cycleShikiTheme}
+                  title={`Proximo tema (atual: ${activeShikiThemeLabel})`}
+                  aria-label={`Proximo tema (atual: ${activeShikiThemeLabel})`}
+                >
+                  <Palette size={13} />
+                  Proximo
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1331,7 +1551,9 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                     </div>
                   </header>
 
-                  {selectedDiffFile.hunks.map((hunk, hunkIndex) => (
+                  {selectedDiffFile.hunks.map((hunk, hunkIndex) => {
+                    const splitPairs = buildSplitPairs(hunkIndex, hunk.lines)
+                    return (
                     <section className="git-panel-diff-hunk" key={`${selectedDiffFile.path}-${hunkIndex}`}>
                       <header className="git-panel-diff-hunk__header">
                         <code>@@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@</code>
@@ -1363,6 +1585,9 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                             const isSelectable = line.type === 'add' || line.type === 'delete'
                             const lineKey = `${hunkIndex}:${lineIndex}`
                             const isLineSelected = selectedLines.has(lineKey)
+                            const highlightedLine = line.type === 'meta'
+                              ? undefined
+                              : diffHighlightedLines[lineKey]
                             return (
                               <div
                                 key={`${selectedDiffFile.path}-${hunkIndex}-${lineIndex}`}
@@ -1388,7 +1613,10 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                                 <span className="git-panel-diff-line__prefix">
                                   {line.type === 'add' ? '+' : line.type === 'delete' ? '-' : line.type === 'meta' ? '\\' : ' '}
                                 </span>
-                                <span className="git-panel-diff-line__content">{line.content || ' '}</span>
+                                <span
+                                  className="git-panel-diff-line__content"
+                                  dangerouslySetInnerHTML={{ __html: highlightedLine ?? escapeHtml(line.content || ' ') }}
+                                />
                               </div>
                             )
                           })}
@@ -1401,7 +1629,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                             ref={splitLeftRef}
                             onScroll={() => handleSplitScroll('left')}
                           >
-                            {buildSplitPairs(hunk.lines).map((pair, pairIndex) => {
+                            {splitPairs.map((pair, pairIndex) => {
                               if (pair.meta) {
                                 return (
                                   <div key={`left-meta-${pairIndex}`} className="git-panel-diff-split__meta-row">
@@ -1416,7 +1644,14 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                                   className={`git-panel-diff-split__row git-panel-diff-split__row--${leftType}`}
                                 >
                                   <span className="git-panel-diff-split__line-num">{pair.left?.oldLine ?? ''}</span>
-                                  <span className="git-panel-diff-split__code">{pair.left?.content ?? ''}</span>
+                                  <span
+                                    className="git-panel-diff-split__code"
+                                    dangerouslySetInnerHTML={{
+                                      __html: pair.leftKey && pair.left
+                                        ? (diffHighlightedLines[pair.leftKey] ?? escapeHtml(pair.left.content || ' '))
+                                        : escapeHtml(pair.left?.content || ' '),
+                                    }}
+                                  />
                                 </div>
                               )
                             })}
@@ -1427,7 +1662,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                             ref={splitRightRef}
                             onScroll={() => handleSplitScroll('right')}
                           >
-                            {buildSplitPairs(hunk.lines).map((pair, pairIndex) => {
+                            {splitPairs.map((pair, pairIndex) => {
                               if (pair.meta) {
                                 return (
                                   <div key={`right-meta-${pairIndex}`} className="git-panel-diff-split__meta-row">
@@ -1442,7 +1677,14 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                                   className={`git-panel-diff-split__row git-panel-diff-split__row--${rightType}`}
                                 >
                                   <span className="git-panel-diff-split__line-num">{pair.right?.newLine ?? ''}</span>
-                                  <span className="git-panel-diff-split__code">{pair.right?.content ?? ''}</span>
+                                  <span
+                                    className="git-panel-diff-split__code"
+                                    dangerouslySetInnerHTML={{
+                                      __html: pair.rightKey && pair.right
+                                        ? (diffHighlightedLines[pair.rightKey] ?? escapeHtml(pair.right.content || ' '))
+                                        : escapeHtml(pair.right?.content || ' '),
+                                    }}
+                                  />
                                 </div>
                               )
                             })}
@@ -1450,11 +1692,17 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                         </div>
                       )}
                     </section>
-                  ))}
+                    )
+                  })}
                 </article>
               </div>
             ) : diffData?.raw?.trim() ? (
-              <pre className="git-panel-diff__raw">{diffData.raw}</pre>
+              <ReactAICodeBlock
+                code={diffData.raw}
+                language="diff"
+                theme={shikiTheme}
+                className="git-panel-diff__raw-block"
+              />
             ) : (
               <div className="git-panel-diff__empty">Sem diferenças para o arquivo selecionado.</div>
             )}
@@ -1567,6 +1815,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                     onClick={() => {
                       setSelectedDiffPath(file.path)
                       setActiveInspectorTab('diff')
+                      setSelectedCommitHash('')
                     }}
                   >
                     <span>{file.path}</span>
@@ -1598,6 +1847,7 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                     onClick={() => {
                       setSelectedDiffPath(file.path)
                       setActiveInspectorTab('diff')
+                      setSelectedCommitHash('')
                     }}
                   >
                     <span>{file.path}</span>
@@ -1668,9 +1918,30 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
             </p>
           )}
         </div>
+
+        <nav className="git-panel-screen__mode-switch" aria-label="Modo do Git Panel">
+          <button
+            type="button"
+            className={`git-panel-screen__mode-btn ${activeViewMode === 'local' ? 'git-panel-screen__mode-btn--active' : ''}`}
+            onClick={() => setActiveViewMode('local')}
+          >
+            Local Git
+          </button>
+          <button
+            type="button"
+            className={`git-panel-screen__mode-btn ${activeViewMode === 'prs' ? 'git-panel-screen__mode-btn--active' : ''}`}
+            onClick={() => setActiveViewMode('prs')}
+          >
+            <GitPullRequest size={13} />
+            PRs
+          </button>
+        </nav>
       </header>
 
-      <div className="git-panel-screen__layout">
+      {activeViewMode === 'prs' ? (
+        <GitPanelPRView repoPath={selectedRepoPath} />
+      ) : (
+        <div className="git-panel-screen__layout">
         <aside
           className="git-panel-pane git-panel-sidebar"
           aria-label="Branches e refs"
@@ -1815,10 +2086,28 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                         aria-selected={isSelected}
                         onClick={() => {
                           setSelectedCommitHash(row.item.hash)
-                          setActiveInspectorTab('commit')
                         }}
                       >
-                        <div className="git-panel-log__row-title">{row.item.subject || '(sem subject)'}</div>
+                        <div className="git-panel-log__row-main">
+                          <div className="git-panel-log__row-title-wrap">
+                            <span
+                              className="git-panel-log__commit-icon git-panel-log__commit-icon--title"
+                              aria-hidden="true"
+                              // SVG local estático do projeto (shape oficial de commit horizontal)
+                              dangerouslySetInnerHTML={{ __html: commitHorizontalIconSVG }}
+                            />
+                            <div
+                              className="git-panel-log__row-title"
+                              title={row.item.subject || '(sem subject)'}
+                            >
+                              {row.item.subject || '(sem subject)'}
+                            </div>
+                          </div>
+                          <div className="git-panel-log__row-tags" aria-hidden="true">
+                            <span className="git-panel-log__chip">{resolveCommitSourceTag(row.item)}</span>
+                            <span className="git-panel-log__chip git-panel-log__chip--hash">{row.item.shortHash}</span>
+                          </div>
+                        </div>
                         <div className="git-panel-log__row-author">
                           {row.item.githubAvatarUrl ? (
                             <img
@@ -1833,21 +2122,22 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
                             </span>
                           )}
                           <span className="git-panel-log__author-name">{resolveCommitActorLabel(row.item)}</span>
+                          <span className="git-panel-log__author-branch" title={`Branch atual: ${branchName}`}>
+                            <GitBranch size={11} aria-hidden="true" />
+                            {branchName}
+                          </span>
                         </div>
                         <div className="git-panel-log__row-meta">
-                          <span className="git-panel-log__commit-hash">
-                            <span
-                              className="git-panel-log__commit-icon"
-                              aria-hidden="true"
-                              // SVG local estático do projeto (shape oficial de commit horizontal)
-                              dangerouslySetInnerHTML={{ __html: commitHorizontalIconSVG }}
-                            />
-                            <code>{row.item.shortHash}</code>
+                          <span className="git-panel-log__metric" title={formatCommitDate(row.item.authoredAt)}>
+                            <Clock3 size={12} aria-hidden="true" />
+                            {formatCommitAge(row.item.authoredAt)}
                           </span>
-                          <span>{formatCommitDate(row.item.authoredAt)}</span>
-                          <span className="git-panel-log__metric">{formatFilesChangedLabel(row.item.changedFiles)}</span>
-                          <span className="git-panel-log__metric git-panel-log__metric--positive">+{formatMetricCount(row.item.additions)} insertions</span>
-                          <span className="git-panel-log__metric git-panel-log__metric--negative">-{formatMetricCount(row.item.deletions)} deletions</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--positive">+{formatMetricCount(row.item.additions)}</span>
+                          <span className="git-panel-log__metric git-panel-log__metric--negative">-{formatMetricCount(row.item.deletions)}</span>
+                          <span className="git-panel-log__metric">
+                            <FileCode2 size={12} aria-hidden="true" />
+                            {formatFilesChangedCompact(row.item.changedFiles)}
+                          </span>
                         </div>
                       </button>
                     )
@@ -1868,7 +2158,10 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
             <button
               type="button"
               className={`git-panel-inspector__tab ${activeInspectorTab === 'working-tree' ? 'git-panel-inspector__tab--active' : ''}`}
-              onClick={() => setActiveInspectorTab('working-tree')}
+              onClick={() => {
+                setActiveInspectorTab('working-tree')
+                setSelectedCommitHash('')
+              }}
             >
               Working Tree
             </button>
@@ -1897,39 +2190,41 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
 
           <div className="git-panel-inspector__body">{renderInspectorTabContent()}</div>
         </aside>
-      </div>
+        </div>
+      )}
 
-      {/* --- Git Command Console output drawer --- */}
-      <section className={`git-panel-console-drawer ${isConsoleOpen ? 'open' : ''}`}>
-        <header className="git-panel-console__header" onClick={() => setIsConsoleOpen(!isConsoleOpen)}>
-          <div className="git-panel-console__title">
-            <Terminal size={14} /> Git Console Output
-            <span style={{ opacity: 0.6, fontSize: '10px', marginLeft: 8 }}>(Pressione Esc para focar e voltar)</span>
-          </div>
-          <span className="badge badge--accent">{consoleLogs.length} events</span>
-        </header>
-        {isConsoleOpen && (
-          <div className="git-panel-console__body">
-            {consoleLogs.length === 0 ? (
-              <div className="git-panel-console__empty">Nenhuma atividade registrada ainda. Execute uma ação.</div>
-            ) : (
-              <ul className="git-panel-console__list">
-                {consoleLogs.map(log => (
-                  <li key={log.commandId} className={`git-panel-console__item status-${log.status}`}>
-                    <div className="git-panel-console__item-header">
-                      <span className="git-panel-console__action">{log.action}</span>
-                      <span className="git-panel-console__duration">{log.durationMs}ms</span>
-                      <span className="git-panel-console__code">{log.exitCode === 0 ? 'success' : `exit: ${log.exitCode}`}</span>
-                    </div>
-                    {log.args && log.args.length > 0 && <div className="git-panel-console__args">git {log.args.join(' ')}</div>}
-                    {log.stderrSanitized && <div className="git-panel-console__stderr">{log.stderrSanitized}</div>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </section>
+      {activeViewMode === 'local' && (
+        <section className={`git-panel-console-drawer ${isConsoleOpen ? 'open' : ''}`}>
+          <header className="git-panel-console__header" onClick={() => setIsConsoleOpen(!isConsoleOpen)}>
+            <div className="git-panel-console__title">
+              <Terminal size={14} /> Git Console Output
+              <span style={{ opacity: 0.6, fontSize: '10px', marginLeft: 8 }}>(Pressione Esc para focar e voltar)</span>
+            </div>
+            <span className="badge badge--accent">{consoleLogs.length} events</span>
+          </header>
+          {isConsoleOpen && (
+            <div className="git-panel-console__body">
+              {consoleLogs.length === 0 ? (
+                <div className="git-panel-console__empty">Nenhuma atividade registrada ainda. Execute uma ação.</div>
+              ) : (
+                <ul className="git-panel-console__list">
+                  {consoleLogs.map(log => (
+                    <li key={log.commandId} className={`git-panel-console__item status-${log.status}`}>
+                      <div className="git-panel-console__item-header">
+                        <span className="git-panel-console__action">{log.action}</span>
+                        <span className="git-panel-console__duration">{log.durationMs}ms</span>
+                        <span className="git-panel-console__code">{log.exitCode === 0 ? 'success' : `exit: ${log.exitCode}`}</span>
+                      </div>
+                      {log.args && log.args.length > 0 && <div className="git-panel-console__args">git {log.args.join(' ')}</div>}
+                      {log.stderrSanitized && <div className="git-panel-console__stderr">{log.stderrSanitized}</div>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
     </section>
   )
@@ -1938,40 +2233,47 @@ export function GitPanelScreen({ onBack }: GitPanelScreenProps) {
 interface DiffSplitPair {
   left: GitPanelDiffLine | null
   right: GitPanelDiffLine | null
+  leftKey?: string
+  rightKey?: string
   meta?: string
 }
 
-function buildSplitPairs(lines: GitPanelDiffLine[]): DiffSplitPair[] {
+function buildSplitPairs(hunkIndex: number, lines: GitPanelDiffLine[]): DiffSplitPair[] {
   const pairs: DiffSplitPair[] = []
-  const pendingDeletes: GitPanelDiffLine[] = []
-  const pendingAdds: GitPanelDiffLine[] = []
+  const pendingDeletes: Array<{ line: GitPanelDiffLine; key: string }> = []
+  const pendingAdds: Array<{ line: GitPanelDiffLine; key: string }> = []
 
   const flushPending = () => {
     const maxRows = Math.max(pendingDeletes.length, pendingAdds.length)
     for (let index = 0; index < maxRows; index += 1) {
       pairs.push({
-        left: pendingDeletes[index] ?? null,
-        right: pendingAdds[index] ?? null,
+        left: pendingDeletes[index]?.line ?? null,
+        right: pendingAdds[index]?.line ?? null,
+        leftKey: pendingDeletes[index]?.key,
+        rightKey: pendingAdds[index]?.key,
       })
     }
     pendingDeletes.length = 0
     pendingAdds.length = 0
   }
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex]
+    const lineKey = `${hunkIndex}:${lineIndex}`
+
     if (line.type === 'context') {
       flushPending()
-      pairs.push({ left: line, right: line })
+      pairs.push({ left: line, right: line, leftKey: lineKey, rightKey: lineKey })
       continue
     }
 
     if (line.type === 'delete') {
-      pendingDeletes.push(line)
+      pendingDeletes.push({ line, key: lineKey })
       continue
     }
 
     if (line.type === 'add') {
-      pendingAdds.push(line)
+      pendingAdds.push({ line, key: lineKey })
       continue
     }
 
@@ -1985,6 +2287,106 @@ function buildSplitPairs(lines: GitPanelDiffLine[]): DiffSplitPair[] {
 
   flushPending()
   return pairs
+}
+
+let shikiModulePromise: Promise<typeof import('shiki')> | null = null
+
+async function highlightLinesWithShiki(
+  lines: string[],
+  language: BundledLanguage,
+  theme: BundledTheme,
+): Promise<string[]> {
+  if (lines.length === 0) {
+    return []
+  }
+
+  if (!shikiModulePromise) {
+    shikiModulePromise = import('shiki')
+  }
+
+  const shiki = await shikiModulePromise
+  const source = lines.map((line) => line === '' ? ' ' : line).join('\n')
+  const html = await shiki.codeToHtml(source, {
+    lang: language,
+    theme,
+  })
+  const extracted = extractShikiLines(html, lines.length)
+  if (extracted.length === 0) {
+    return lines.map((line) => escapeHtml(line || ' '))
+  }
+  return extracted
+}
+
+function extractShikiLines(highlightedHTML: string, expectedLines: number): string[] {
+  if (typeof DOMParser === 'undefined') {
+    return []
+  }
+
+  const doc = new DOMParser().parseFromString(highlightedHTML, 'text/html')
+  const lineNodes = Array.from(doc.querySelectorAll('pre code .line'))
+  if (lineNodes.length === 0) {
+    return []
+  }
+
+  const lines = lineNodes.map((node) => {
+    const lineHTML = node.innerHTML
+    return lineHTML.trim() === '' ? '&nbsp;' : lineHTML
+  })
+  while (lines.length < expectedLines) {
+    lines.push('&nbsp;')
+  }
+  return lines.slice(0, expectedLines)
+}
+
+function resolveShikiLanguageFromPath(filePath: string): BundledLanguage | null {
+  const normalized = filePath.trim().toLowerCase()
+  if (normalized === '') {
+    return null
+  }
+
+  const extension = normalized.includes('.') ? normalized.split('.').pop() || '' : ''
+  const extensionMap: Record<string, BundledLanguage> = {
+    ts: 'typescript',
+    tsx: 'tsx',
+    js: 'javascript',
+    jsx: 'jsx',
+    go: 'go',
+    rs: 'rust',
+    py: 'python',
+    json: 'json',
+    yml: 'yaml',
+    yaml: 'yaml',
+    md: 'markdown',
+    sh: 'shellscript',
+    zsh: 'shellscript',
+    bash: 'shellscript',
+    css: 'css',
+    scss: 'scss',
+    html: 'html',
+    xml: 'xml',
+    java: 'java',
+    kt: 'kotlin',
+    rb: 'ruby',
+    php: 'php',
+    sql: 'sql',
+    c: 'c',
+    h: 'c',
+    cpp: 'cpp',
+    cxx: 'cpp',
+    cc: 'cpp',
+    hpp: 'cpp',
+  }
+
+  return extensionMap[extension] ?? null
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -2082,9 +2484,53 @@ function formatMetricCount(value: number): string {
   return safeValue.toLocaleString()
 }
 
+function formatCommitAge(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '-'
+  }
+
+  const diffMs = Date.now() - date.getTime()
+  const safeDiffMs = Math.max(0, diffMs)
+  const totalMinutes = Math.floor(safeDiffMs / (1000 * 60))
+
+  if (totalMinutes < 1) {
+    return 'now'
+  }
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m ago`
+  }
+
+  const totalHours = Math.floor(totalMinutes / 60)
+  if (totalHours < 24) {
+    return `${totalHours}h ago`
+  }
+
+  const totalDays = Math.floor(totalHours / 24)
+  if (totalDays < 14) {
+    return `${totalDays}d ago`
+  }
+
+  const totalWeeks = Math.floor(totalDays / 7)
+  if (totalWeeks < 8) {
+    return `${totalWeeks}w ago`
+  }
+
+  return date.toLocaleDateString()
+}
+
+function formatFilesChangedCompact(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+  return safeValue === 1 ? '1 file' : `${safeValue} files`
+}
+
 function formatFilesChangedLabel(value: number): string {
   const safeValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
   return safeValue === 1 ? '1 file changed' : `${safeValue} files changed`
+}
+
+function resolveCommitSourceTag(item: GitPanelHistoryItem): string {
+  return (item.githubLogin || '').trim() !== '' ? 'github' : 'local'
 }
 
 function normalizeHistoryPage(raw: unknown): GitPanelHistoryPageDTO {
@@ -2161,7 +2607,27 @@ function mergeHistoryItems(current: GitPanelHistoryItem[], incoming: GitPanelHis
   return merged
 }
 
-function buildDiffCandidates(status: GitPanelStatusDTO | null): DiffCandidate[] {
+function buildDiffCandidates(
+  status: GitPanelStatusDTO | null,
+  commitFiles: gitpanel.CommitFileDTO[] | null = null,
+  activeTab: InspectorTab | null = null,
+  commitHash: string | null = null
+): DiffCandidate[] {
+  // If we have a selected commit AND the tab implies we want to see it
+  if (commitHash && (activeTab === 'commit' || activeTab === 'diff')) {
+    const candidates: DiffCandidate[] = []
+    if (!commitFiles) return candidates
+
+    for (const file of commitFiles) {
+      candidates.push({
+        path: file.path,
+        status: file.status,
+        bucket: 'commit',
+      })
+    }
+    return candidates
+  }
+
   if (!status) {
     return []
   }

@@ -8,6 +8,7 @@ export interface GitHubUser {
 export interface GitHubLabel {
   name: string
   color: string
+  description?: string
 }
 
 export interface Repository {

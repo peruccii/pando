@@ -29,10 +29,11 @@ type AuthResult struct {
 
 // TokenPair armazena os tokens de acesso e refresh
 type TokenPair struct {
-	AccessToken  string    `json:"accessToken"`
-	RefreshToken string    `json:"refreshToken"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	Provider     string    `json:"provider"`
+	AccessToken         string    `json:"accessToken"`
+	RefreshToken        string    `json:"refreshToken"`
+	ProviderAccessToken string    `json:"providerAccessToken,omitempty"`
+	ExpiresAt           time.Time `json:"expiresAt"`
+	Provider            string    `json:"provider"`
 }
 
 // PKCEChallenge representa os dados do PKCE flow
